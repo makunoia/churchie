@@ -290,7 +290,8 @@ churchie/
 
 ### Package Manager
 - Use **pnpm** exclusively — do not use npm or yarn
-- Prisma client generates to `app/generated/prisma` (Prisma 7 default) — import from `@/app/generated/prisma`
+- Prisma 7 generates client to `app/generated/prisma/` — import `PrismaClient` from `@/app/generated/prisma/client`
+- Prisma 7 uses driver adapters — `lib/db.ts` initialises with `PrismaPg` from `@prisma/adapter-pg`
 - `lib/db.ts` exports the singleton Prisma client as `db`
 
 ### Data Access
