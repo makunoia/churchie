@@ -1,6 +1,7 @@
 "use client"
 
-import { useRouter } from "next/navigation"
+import { useActionState } from "react"
+import { login } from "@/app/(auth)/login/actions"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -15,13 +16,13 @@ export function LoginForm({
   className,
   ...props
 }: React.ComponentProps<"div">) {
-  const router = useRouter()
+  const [state, formAction, isPending] = useActionState(login, null)
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
       <Card className="overflow-hidden p-0">
         <CardContent className="grid p-0 md:grid-cols-2">
-          <form className="p-6 md:p-8" onSubmit={(e) => { e.preventDefault(); router.push("/dashboard") }}>
+          <form className="p-6 md:p-8" action={formAction}>
             <FieldGroup>
               <div className="flex flex-col items-center gap-2 text-center">
                 <h1 className="text-2xl font-bold">Welcome back</h1>
@@ -29,10 +30,16 @@ export function LoginForm({
                   Sign in to your Churchie account
                 </p>
               </div>
+              {state?.error && (
+                <p className="text-sm text-destructive text-center">
+                  {state.error}
+                </p>
+              )}
               <Field>
                 <FieldLabel htmlFor="email">Email</FieldLabel>
                 <Input
                   id="email"
+                  name="email"
                   type="email"
                   placeholder="admin@church.org"
                   required
@@ -40,10 +47,12 @@ export function LoginForm({
               </Field>
               <Field>
                 <FieldLabel htmlFor="password">Password</FieldLabel>
-                <Input id="password" type="password" required />
+                <Input id="password" name="password" type="password" required />
               </Field>
               <Field>
-                <Button type="submit">Sign in</Button>
+                <Button type="submit" disabled={isPending}>
+                  {isPending ? "Signing in…" : "Sign in"}
+                </Button>
               </Field>
             </FieldGroup>
           </form>

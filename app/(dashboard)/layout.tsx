@@ -1,12 +1,17 @@
+import { redirect } from "next/navigation"
+import { auth } from "@/lib/auth"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
+  const session = await auth()
+  if (!session) redirect("/login")
+
   return (
     <SidebarProvider
       style={
@@ -16,7 +21,14 @@ export default function DashboardLayout({
         } as React.CSSProperties
       }
     >
-      <AppSidebar variant="inset" />
+      <AppSidebar
+        variant="inset"
+        user={{
+          name: session.user?.name ?? "Admin",
+          email: session.user?.email ?? "",
+          avatar: session.user?.image ?? "",
+        }}
+      />
       <SidebarInset>
         <SiteHeader />
         <div className="flex flex-1 flex-col">
