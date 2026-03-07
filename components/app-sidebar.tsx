@@ -26,59 +26,61 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 
-const data = {
-  user: {
-    name: "Admin",
-    email: "admin@churchie.app",
-    avatar: "",
+const navMain = [
+  {
+    title: "Dashboard",
+    url: "/dashboard",
+    icon: IconLayoutDashboard,
   },
-  navMain: [
-    {
-      title: "Dashboard",
-      url: "/dashboard",
-      icon: IconLayoutDashboard,
-    },
-    {
-      title: "Members",
-      url: "/members",
-      icon: IconUsers,
-    },
-    {
-      title: "Small Groups",
-      url: "/small-groups",
-      icon: IconUsersGroup,
-    },
-    {
-      title: "Ministries",
-      url: "/ministries",
-      icon: IconBuilding,
-    },
-    {
-      title: "Events",
-      url: "/events",
-      icon: IconCalendar,
-    },
-    {
-      title: "Volunteers",
-      url: "/volunteers",
-      icon: IconHeart,
-    },
-  ],
-  navSecondary: [
-    {
-      title: "Settings",
-      url: "/settings",
-      icon: IconSettings,
-    },
-    {
-      title: "Help",
-      url: "#",
-      icon: IconHelp,
-    },
-  ],
+  {
+    title: "Members",
+    url: "/members",
+    icon: IconUsers,
+  },
+  {
+    title: "Small Groups",
+    url: "/small-groups",
+    icon: IconUsersGroup,
+  },
+  {
+    title: "Ministries",
+    url: "/ministries",
+    icon: IconBuilding,
+  },
+  {
+    title: "Events",
+    url: "/events",
+    icon: IconCalendar,
+  },
+  {
+    title: "Volunteers",
+    url: "/volunteers",
+    icon: IconHeart,
+  },
+]
+
+const navSecondary = [
+  {
+    title: "Settings",
+    url: "/settings",
+    icon: IconSettings,
+  },
+  {
+    title: "Help",
+    url: "#",
+    icon: IconHelp,
+  },
+]
+
+type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
+  user: {
+    name: string
+    email: string
+    avatar: string
+  }
 }
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar({ user, ...props }: AppSidebarProps) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -97,11 +99,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
-        <NavSecondary items={data.navSecondary} className="mt-auto" />
+        <NavMain items={navMain} />
+        <NavSecondary items={navSecondary} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={data.user} />
+        <NavUser user={user} />
       </SidebarFooter>
     </Sidebar>
   )
