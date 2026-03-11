@@ -1,8 +1,6 @@
-import { IconPlus, IconUsers } from "@tabler/icons-react"
-
 import { db } from "@/lib/db"
-import { DataTable } from "@/components/ui/data-table"
-import { buildColumns, type MemberRow } from "./columns"
+import { type MemberRow } from "./columns"
+import { MembersTable } from "./members-table"
 import { MembersToolbar } from "./toolbar"
 
 async function getMembers(): Promise<MemberRow[]> {
@@ -55,8 +53,6 @@ export default async function MembersPage() {
     getLifeStages(),
   ])
 
-  const columns = buildColumns(lifeStages)
-
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <div className="flex items-center justify-between">
@@ -69,16 +65,7 @@ export default async function MembersPage() {
         <MembersToolbar lifeStages={lifeStages} />
       </div>
 
-      <DataTable
-        columns={columns}
-        data={members}
-        emptyState={
-          <>
-            <IconUsers className="size-8" />
-            <p className="text-sm">No members yet</p>
-          </>
-        }
-      />
+      <MembersTable members={members} lifeStages={lifeStages} />
     </div>
   )
 }
