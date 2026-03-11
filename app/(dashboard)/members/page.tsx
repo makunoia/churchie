@@ -20,11 +20,7 @@ async function getMembers(): Promise<MemberRow[]> {
     phone: m.phone,
     smallGroupName: m.smallGroup?.name ?? null,
     lifeStage: m.lifeStage?.name ?? null,
-    dateJoined: m.dateJoined.toLocaleDateString("en-PH", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    }),
+    dateJoined: m.dateJoined.toISOString().split("T")[0],
     // For edit pre-fill
     address: m.address,
     notes: m.notes,

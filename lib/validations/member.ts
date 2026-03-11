@@ -30,15 +30,18 @@ export const memberSchema = z.object({
     .transform((v) => new Date(v)),
   notes: nullableString,
   lifeStageId: nullableString,
-  gender: z.enum(["Male", "Female"]).optional().nullable(),
+  gender: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["Male", "Female"]).optional().nullable()
+  ),
   language: nullableString,
   birthDate: nullableDate,
   workCity: nullableString,
   workIndustry: nullableString,
-  meetingPreference: z
-    .enum(["Online", "Hybrid", "InPerson"])
-    .optional()
-    .nullable(),
+  meetingPreference: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["Online", "Hybrid", "InPerson"]).optional().nullable()
+  ),
 })
 
 export type MemberInput = z.infer<typeof memberSchema>
