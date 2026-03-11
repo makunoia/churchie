@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { Prisma } from "@/app/generated/prisma/client"
 import { db } from "@/lib/db"
 import { memberSchema, type MemberFormValues } from "@/lib/validations/member"
 
@@ -42,8 +43,7 @@ export async function createMember(
     revalidatePath("/members")
     return { success: true, data: { id: member.id } }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Unknown error"
-    if (msg.includes("Unique constraint") && msg.includes("email")) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
       return { success: false, error: "A member with this email already exists" }
     }
     return { success: false, error: "Failed to create member" }
@@ -85,8 +85,7 @@ export async function updateMember(
     revalidatePath("/members")
     return { success: true, data: undefined }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Unknown error"
-    if (msg.includes("Unique constraint") && msg.includes("email")) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
       return { success: false, error: "A member with this email already exists" }
     }
     return { success: false, error: "Failed to update member" }

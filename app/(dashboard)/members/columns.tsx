@@ -178,6 +178,13 @@ export function buildColumns(
     {
       accessorKey: "dateJoined",
       header: "Date Joined",
+      cell: ({ row }) =>
+        new Date(row.original.dateJoined).toLocaleDateString("en-PH", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          timeZone: "UTC",
+        }),
     },
     {
       id: "actions",
