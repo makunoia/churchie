@@ -121,7 +121,27 @@ export async function assignBreakoutForRegistrant(
    * self-asserted `walkIn` flag, because it only ever makes placement *stricter*.
    * A forged claim narrows the candidate pool; it can't widen it.
    */
-  atDoor: { occurrenceId: string | null } | null = null
+  atDoor: { occurrenceId: string | null } | null = null,
+  /**
+   * Leave someone unseated rather than placing them automatically, because a
+   * later surface is going to ask them.
+   *
+   * Only ever suppresses the automatic branch — an explicit pick is a decision
+   * already taken and is honoured regardless. The rule it serves is the one
+   * `autoAssignBreakout` has always encoded: auto-assign *replaces* a picker
+   * rather than sitting beside it. That held while the picker and the placement
+   * lived on the same form, and stopped holding once a Collab day's kiosk could
+   * ask about the day's tables (CCF-148): the shared form placed the person at
+   * submit, so the kiosk found them seated and skipped its own step, and turning
+   * the section on looked like it did nothing.
+   *
+   * Deliberately a caller's decision rather than a read this function makes for
+   * itself. Which surface asks next is a property of the day being registered
+   * for, not of the event row in front of us — and only the caller knows whether
+   * there *is* a next surface: the walk-in door checks people in on the spot, so
+   * nobody deferred there would ever be asked again.
+   */
+  skipAutoAssign = false
 ): Promise<AssignedBreakout> {
   try {
     const event = await db.event.findUnique({
@@ -219,7 +239,7 @@ export async function assignBreakoutForRegistrant(
       ) {
         chosenGroupId = picked.id
       }
-    } else if (event.autoAssignBreakout) {
+    } else if (event.autoAssignBreakout && !skipAutoAssign) {
       // Auto-assign stays capacity-gated regardless: nobody chose this group, so
       // there is no intent to honour.
       //
@@ -939,8 +959,14 @@ export async function completeEventRegistration(opts: {
    * protect.
    */
   touchedFields?: TouchedFields
+  /**
+   * Register without placing the person automatically, because the surface they
+   * meet next is going to ask them — see `assignBreakoutForRegistrant`. An
+   * explicit `breakoutPick` still lands.
+   */
+  skipAutoAssign?: boolean
 }): Promise<{ id: string; breakoutGroup: AssignedBreakout }> {
-  const { eventId, person, data, breakoutPick, profile, clusterId, walkIn, allowOverCapacity, existingRegistrantId, touchedFields } = opts
+  const { eventId, person, data, breakoutPick, profile, clusterId, walkIn, allowOverCapacity, existingRegistrantId, touchedFields, skipAutoAssign } = opts
 
   let registrantId: string
   if (existingRegistrantId) {
@@ -977,7 +1003,8 @@ export async function completeEventRegistration(opts: {
     // `walkIn` is enough here where it is not enough for `allowOverCapacity`:
     // this narrows automatic placement to staffed groups, so the worst a forged
     // flag buys is a stricter pool.
-    walkIn ?? null
+    walkIn ?? null,
+    !!skipAutoAssign
   )
 
   // Someone who asked to join a DGroup becomes a request an admin can actually

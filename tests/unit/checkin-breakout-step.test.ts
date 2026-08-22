@@ -131,26 +131,31 @@ describe("a cluster day's check-in kiosk", () => {
   })
 })
 
-describe("the facilitator-gate warning reaches Check-in", () => {
+describe("the facilitator-gate warning names the door alone", () => {
   const server = readFileSync(
     join(process.cwd(), "lib/forms/form-prerequisites-server.ts"),
     "utf8"
   )
 
-  it("is scoped to both day-of surfaces, not just the door", () => {
-    // Both gate on the facilitator being in the room; the public registration
-    // form, filled in days ahead, does not.
+  it("stays off Check-in, whose pool is ungated", () => {
+    // The door gates on the facilitator being in the room, because there a
+    // staffer is handing someone over and an unstaffed table is a handover to
+    // nobody. The kiosk asked with the same gated pool for exactly one commit
+    // (CCF-149) before it was widened to every enabled table: a table whose host
+    // hasn't arrived yet is the ordinary state of the first half hour, so the
+    // gate left an `awaiting-facilitator` notice where the suggestion should be.
+    // The warning has to follow, or it explains an emptiness that no longer
+    // happens there.
     //
     // Asserted over *every* copy of the branch: there are two — the event's and
-    // the cluster's — and widening only one is exactly the drift that would leave
-    // a Collab day's admin with no warning at all.
+    // the cluster's — and changing only one is the drift this guards against.
     const matches = [
       ...server.matchAll(/staffedGroups === 0[\s\S]*?contexts: \[([^\]]*)\]/g),
     ]
     expect(matches.length).toBe(2)
     for (const match of matches) {
       expect(match[1]).toContain(`"WalkIn"`)
-      expect(match[1]).toContain(`"CheckIn"`)
+      expect(match[1]).not.toContain(`"CheckIn"`)
     }
   })
 })

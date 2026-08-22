@@ -627,6 +627,29 @@ export async function registerForCluster(
       ? resolveBreakoutSelection(formConfig, selectedBreakoutGroupId)
       : null
 
+    /**
+     * Whether to leave someone unseated for the day's kiosk to ask (CCF-148).
+     *
+     * A member event with `autoAssignBreakout` on placed every registrant at
+     * submit, and the kiosk skips anyone already seated — so a Collab day whose
+     * Check-in form asked about tables never got to ask anybody, and switching the
+     * section on looked like it did nothing. Auto-assign has always *replaced* a
+     * picker rather than sat beside it; this is that same rule, now that the
+     * picker can be one surface further along.
+     *
+     * Only automatic placement waits. A table chosen on this submission is a
+     * decision already taken and still lands, which is also why the kiosk goes on
+     * skipping people who arrive seated — it re-asks nobody who chose.
+     *
+     * Never at the **door**: a walk-in is checked in on the spot and never reaches
+     * the kiosk, so deferring there would strand them unseated with nobody left to
+     * ask. The door has its own picker for exactly this reason.
+     */
+    const deferBreakoutToCheckin =
+      isCollab &&
+      !walkIn &&
+      (await getClusterFormConfig(cluster.id, "CheckIn")).sectionBreakout
+
     // Going over a group's member limit is a staff decision taken at the door
     // (CCF-141), and `walkIn` alone can't authorise it: the cluster walk-in route
     // is public, so that flag is self-asserted by the request. Same pairing as
@@ -820,6 +843,7 @@ export async function registerForCluster(
           walkIn: walkInForEvent,
           existingRegistrantId: existing?.id ?? null,
           touchedFields: touched,
+          skipAutoAssign: deferBreakoutToCheckin,
         })
         results.push({
           eventId,
@@ -1571,13 +1595,24 @@ export async function checkInToCluster(
 
     revalidateClusterPaths(ctx.cluster.id)
 
-    // Only over the cells we actually recorded: a registration on an event the
+    // Only over cells whose attendance now stands: a registration on an event the
     // day skipped isn't present, so seating them at the day's table would place
     // someone the room has no record of.
+    //
+    // "Now stands" rather than "was written by this tap". A cell skipped as
+    // `already` is attendance too — the person is in the room, they simply got
+    // there a moment earlier, whether by a double tap or by a staffer working the
+    // admin board. Reading only `recorded` meant the step had exactly one chance
+    // to appear and no retry: anyone already checked in went straight to the
+    // welcome screen, which is also what made "undo the arrival, then check in
+    // again" the only way to see it. Every other skip reason is a real absence
+    // and stays out. `pickCheckinBreakout` re-checks the attendance itself, so
+    // this widening cannot seat anyone the room hasn't recorded.
     const seatable = person.events.find(
       (cell) =>
         cell.subject?.kind === "registrant" &&
-        recorded.some((r) => r.eventId === cell.eventId)
+        (recorded.some((r) => r.eventId === cell.eventId) ||
+          skipReasonFor(cell) === "already")
     )
 
     // Re-read so the caller's screen shows what is now true, not what was true
