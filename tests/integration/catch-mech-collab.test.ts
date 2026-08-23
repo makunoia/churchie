@@ -125,12 +125,14 @@ describe("Catch Mech on a Collab cluster", () => {
       select: { id: true },
     })
 
-    // The lead's ministry and the co-faci's ministry both see it...
-    expect(inA.map((g) => g.id)).toEqual([sharedTable.id])
+    // The lead's ministry and the co-faci's ministry both see the shared table...
+    expect(inA.map((g) => g.id)).toContain(sharedTable.id)
     expect(inB.map((g) => g.id)).toEqual([sharedTable.id])
-    // ...and A's own standing table is NOT in scope: on a collab day nobody sat
-    // at it, so reporting on it would be reporting on last week.
-    expect(inA.map((g) => g.id)).not.toContain(standingTable.id)
+    // ...and A keeps its OWN standing table in scope alongside it. The scope is a
+    // union: an event's follow-up history is keyed to the tables it was recorded
+    // against, and joining a collab must not put it out of reach.
+    expect(inA.map((g) => g.id).sort()).toEqual([sharedTable.id, standingTable.id].sort())
+    // B never had a standing table of its own, so it sees only the shared one.
     // An event outside the cluster is unaffected and sees only its own.
     expect(inOutsider).toEqual([])
   })

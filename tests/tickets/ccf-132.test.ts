@@ -126,6 +126,8 @@ describe("unit — roster matrix builder", () => {
     eventType: "OneTime" as const,
     phone: null,
     isMember: false,
+    gender: null,
+    checkedInAt: null,
     // `viaCluster: boolean` became `registrationClusterId: string | null` — the
     // roll-up needs to know *which* cluster's link someone came through, not
     // just that they came through one.
@@ -141,8 +143,8 @@ describe("unit — roster matrix builder", () => {
       { ...base, id: "r2", eventId: "e2", memberId: null, guestId: "g1", firstName: "Ana", lastName: "Reyes", checkedIn: false },
     ])
     expect(roster.rows).toHaveLength(1)
-    expect(roster.rows[0].perEvent.e1).toEqual({ kind: "Registrant" as const, registrantId: "r1", checkedIn: true, onClusterDay: true })
-    expect(roster.rows[0].perEvent.e2).toEqual({ kind: "Registrant" as const, registrantId: "r2", checkedIn: false, onClusterDay: true })
+    expect(roster.rows[0].perEvent.e1).toEqual({ kind: "Registrant" as const, registrantId: "r1", checkedIn: true, checkedInAt: null, onClusterDay: true })
+    expect(roster.rows[0].perEvent.e2).toEqual({ kind: "Registrant" as const, registrantId: "r2", checkedIn: false, checkedInAt: null, onClusterDay: true })
   })
 
   it("keeps different people apart and sorts by name", () => {

@@ -492,7 +492,7 @@ const CHECKIN_LAYOUT: readonly FormLayoutSection[] = [
     description: FORM_SECTION_META.sectionBreakout.description,
     fields: [],
     options: [],
-    note: "Adds a step after the DGroup prompt for picking a breakout group, ranked from the profile we already hold. Only offered to someone who isn't already seated — volunteers never see it — and, like the door, only over tables whose facilitator has checked in. Always skippable. Turned off automatically while auto-assign is on.",
+    note: "Adds a step after the DGroup prompt for picking a breakout group, ranked from the profile we already hold, over every table that's switched on. Only offered to someone who isn't already seated — volunteers never see it. Always skippable. The kiosk places nobody automatically while this is on, so there is someone left to ask; on an event day, registration holds off too.",
   },
   {
     key: "sectionFamily",

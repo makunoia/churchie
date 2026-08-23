@@ -7,6 +7,7 @@ import { isEstablishedAttendee, resolveAttendeeStatus } from "@/lib/session-stat
 import { ministryLabel } from "@/lib/events/ministry-label"
 import { breakoutOccupancy } from "@/lib/breakouts/occupancy"
 import { resolvePoolScope } from "@/lib/events/pool-scope"
+import { anyOwner } from "@/lib/breakouts/owner"
 import { BreadcrumbOverride } from "@/components/breadcrumb-context"
 import { DetailPageHeader } from "@/components/detail-page-header"
 import { SessionAttendeesTable } from "./session-attendees-table"
@@ -69,10 +70,21 @@ async function getOccurrenceDetail(occurrenceId: string) {
 
   if (!occurrence) return null
 
-  // Which tables this session runs, and whose volunteers may staff them. Under a
-  // Collab the tables belong to the day rather than to this event, and either
-  // ministry's roster can supply a substitute — see lib/events/pool-scope.ts.
+  // Which tables this session runs, and whose volunteers may staff them.
+  //
+  // BOTH sets under a Collab: this event's own standing tables, which it keeps
+  // whether or not it shares a day, plus the day's cluster-owned ones. A sitting
+  // can need a stand-in at either, and offering only one of them leaves the other
+  // unstaffable — which is how the day's tables were unreachable before, and how
+  // the event's own would be unreachable if the fix simply swapped the two.
+  // Either ministry's roster can supply the substitute — see
+  // lib/events/pool-scope.ts.
   const scope = await resolvePoolScope(occurrence.event.id)
+  const sessionTables = anyOwner(
+    scope.clusterBreakoutOwner
+      ? [scope.breakoutOwner, scope.clusterBreakoutOwner]
+      : [scope.breakoutOwner]
+  )
 
   const [
     volunteers,
@@ -90,7 +102,7 @@ async function getOccurrenceDetail(occurrenceId: string) {
       },
     }),
     db.breakoutGroup.findMany({
-      where: { ...scope.breakoutOwner },
+      where: sessionTables,
       orderBy: { name: "asc" },
       include: {
         facilitator: {

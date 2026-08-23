@@ -7,7 +7,7 @@ import {
   BREAKOUT_ACTIVE_WEIGHT_KEYS,
 } from "@/lib/validations/matching-weights"
 import { deriveEffectiveGenderFocus } from "@/lib/breakouts/gender-focus"
-import { ENABLED_BREAKOUT_WHERE } from "@/lib/breakouts/candidate-pool"
+import { AUTO_ASSIGNABLE_BREAKOUT_WHERE } from "@/lib/breakouts/candidate-pool"
 import type { BreakoutOwner } from "@/lib/breakouts/owner"
 import { scoreGroup, combineCoupleScores } from "./engine"
 import { buildStoredScheduleSlot } from "./candidate-schedule"
@@ -841,13 +841,14 @@ export async function matchBreakoutGroups(
   const assignedGroupIds = new Set(assignments.map((m) => m.breakoutGroupId))
 
   const groups = await db.breakoutGroup.findMany({
-    // A group that is switched off is not suggested. This is the automatic
-    // route; an admin who wants someone in there adds them from the group's own
-    // page, which stays open. See `ENABLED_BREAKOUT_WHERE`.
+    // A group that is switched off — or held back for manual assignment — is not
+    // suggested. This is the automatic route; an admin who wants someone in there
+    // adds them from the group's own page, which stays open for both.
+    // See `AUTO_ASSIGNABLE_BREAKOUT_WHERE`.
     //
     // Scoped by owner (CCF-148): the tables in play are one event's standing set
     // or a Collab cluster's set for the day, never both.
-    where: { ...owner, ...ENABLED_BREAKOUT_WHERE },
+    where: { ...owner, ...AUTO_ASSIGNABLE_BREAKOUT_WHERE },
     select: BREAKOUT_GROUP_SCORE_SELECT,
   })
 

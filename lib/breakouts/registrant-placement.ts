@@ -1,9 +1,11 @@
 import "server-only"
 
 import { db } from "@/lib/db"
+import type { Prisma } from "@/app/generated/prisma/client"
 import { deriveEffectiveGenderFocus } from "@/lib/matching"
 import { resolvePoolScope } from "@/lib/events/pool-scope"
 import {
+  anyOwner,
   ownerOf,
   surfaceFor,
   type BreakoutSurface,
@@ -71,8 +73,14 @@ export function breakoutGroupHref(group: {
 }
 
 /**
- * The tables this registrant could be put in — every table the day's owner has,
+ * The tables this registrant could be put in — every table THIS WORKSPACE owns,
  * minus the ones they already sit at, minus the ones their gender rules out.
+ *
+ * One set, not both: this is the event workspace, and an assignment made here
+ * writes through `surface.owner`. A collab day's tables are placed from the day's
+ * own Breakouts page, which addresses them the same way. Seats the person already
+ * holds are still listed and linked whichever set they are in — `seats` reads
+ * every membership and routes each by the group's own owner columns.
  *
  * The gender filter mirrors the pickers': a table's focus is the one it declares,
  * or the one its facilitators and linked DGroup imply. A registrant with no
@@ -122,22 +130,35 @@ async function loadAvailableGroups(
  * The table this member staffs, if any.
  *
  * Scoped on the two halves of the pool separately, which is the asymmetry
- * `lib/events/pool-scope.ts` exists to express: the **group** must belong to the
- * day's owner, but the **volunteer row** stays owned by whichever member event
- * the person signed up under — under a Collab that is either ministry's, so the
- * roster is the union rather than this registrant's own event.
+ * `lib/events/pool-scope.ts` exists to express: the **volunteer row** stays owned
+ * by whichever member event the person signed up under — under a Collab that is
+ * either ministry's, so the roster is the union rather than this registrant's own
+ * event.
+ *
+ * The group side spans BOTH table sets, unlike the offer list below. This is a
+ * guard, not an offer: its only job is to stop a host being handed a seat, and a
+ * host of the collab day's table is just as unseatable as a host of the event's
+ * own. Answering from one set would put the "Facilitator" badge on some hosts and
+ * an assign list in front of the rest.
+ *
+ * AND rather than a spread — `groups` is itself an `OR` when both sets are in
+ * play, and a second `OR` key in the same object would replace it.
  */
 async function loadFacilitatedGroup(
   memberId: string,
-  surface: BreakoutSurface,
+  groups: Prisma.BreakoutGroupWhereInput,
   volunteerEventIds: string[]
 ) {
   return db.breakoutGroup.findFirst({
     where: {
-      ...surface.owner,
-      OR: [
-        { facilitator: { memberId, eventId: { in: volunteerEventIds } } },
-        { coFacilitator: { memberId, eventId: { in: volunteerEventIds } } },
+      AND: [
+        groups,
+        {
+          OR: [
+            { facilitator: { memberId, eventId: { in: volunteerEventIds } } },
+            { coFacilitator: { memberId, eventId: { in: volunteerEventIds } } },
+          ],
+        },
       ],
     },
     select: { id: true, name: true },
@@ -167,9 +188,15 @@ export async function getRegistrantPlacement(registrant: {
     return href ? [{ id: g.id, name: g.name, href }] : []
   })
 
+  const bothSets: Prisma.BreakoutGroupWhereInput = anyOwner(
+    scope.clusterBreakoutOwner
+      ? [scope.breakoutOwner, scope.clusterBreakoutOwner]
+      : [scope.breakoutOwner]
+  )
+
   const [facilitatedGroup, availableGroups] = await Promise.all([
     registrant.memberId
-      ? loadFacilitatedGroup(registrant.memberId, surface, scope.volunteerEventIds)
+      ? loadFacilitatedGroup(registrant.memberId, bothSets, scope.volunteerEventIds)
       : null,
     loadAvailableGroups(
       surface,

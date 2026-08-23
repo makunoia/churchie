@@ -122,6 +122,78 @@ describe("updateBreakoutGroup and the co-facilitator slot", () => {
     expect(updated?.coFacilitatorId).toBe(coFaci.vol.id)
   })
 
+  it("keeps manualAssignOnly when the payload omits it", async () => {
+    // Same rule as the two slots above, and the reason the schema declares the
+    // field `.optional()` rather than `.default(false)`: a caller that never
+    // rendered the checkbox must not be read as switching it off.
+    const { event, group, faci } = await seed()
+    await db.breakoutGroup.update({
+      where: { id: group.id },
+      data: { manualAssignOnly: true },
+    })
+    const payload = drawerPayload({ facilitatorId: faci.vol.id })
+    delete (payload as Record<string, unknown>).manualAssignOnly
+
+    const result = await updateBreakoutGroup(group.id, { eventId: event.id }, payload)
+
+    expect(result.success).toBe(true)
+    const updated = await db.breakoutGroup.findUnique({ where: { id: group.id } })
+    expect(updated?.manualAssignOnly).toBe(true)
+  })
+
+  it("round-trips manualAssignOnly in both directions", async () => {
+    const { event, group, faci } = await seed()
+
+    const on = await updateBreakoutGroup(
+      group.id,
+      { eventId: event.id },
+      drawerPayload({ facilitatorId: faci.vol.id, manualAssignOnly: true })
+    )
+    expect(on.success).toBe(true)
+    expect(
+      (await db.breakoutGroup.findUnique({ where: { id: group.id } }))?.manualAssignOnly
+    ).toBe(true)
+
+    const off = await updateBreakoutGroup(
+      group.id,
+      { eventId: event.id },
+      drawerPayload({ facilitatorId: faci.vol.id, manualAssignOnly: false })
+    )
+    expect(off.success).toBe(true)
+    expect(
+      (await db.breakoutGroup.findUnique({ where: { id: group.id } }))?.manualAssignOnly
+    ).toBe(false)
+  })
+
+  it("keeps manualAssignOnly when clearing the facilitator wipes the profile", async () => {
+    // Emptying the facilitator slot clears the *matching profile*. How a table
+    // is reached is not one of its criteria, so it survives — which is why the
+    // field is written outside that branch of the update.
+    const { event, group, faci } = await seed()
+    await db.breakoutGroup.update({
+      where: { id: group.id },
+      data: { manualAssignOnly: true, genderFocus: "Male", ageRangeMin: 20 },
+    })
+    // Re-point the group at a single facilitator first, so the clear below is
+    // the transition the action watches for.
+    await db.breakoutGroup.update({
+      where: { id: group.id },
+      data: { coFacilitatorId: null, facilitatorId: faci.vol.id },
+    })
+
+    const result = await updateBreakoutGroup(
+      group.id,
+      { eventId: event.id },
+      drawerPayload({ facilitatorId: null, manualAssignOnly: true })
+    )
+
+    expect(result.success).toBe(true)
+    const updated = await db.breakoutGroup.findUnique({ where: { id: group.id } })
+    expect(updated?.facilitatorId).toBeNull()
+    expect(updated?.genderFocus).toBeNull() // profile cleared, as before
+    expect(updated?.manualAssignOnly).toBe(true) // …but this is not profile
+  })
+
   it("keeps the facilitator when the payload omits it", async () => {
     const { event, group, faci } = await seed()
     const payload = drawerPayload()

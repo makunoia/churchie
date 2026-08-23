@@ -2,7 +2,10 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { IconCheck, IconLoader2, IconUserQuestion, IconArrowLeft } from "@tabler/icons-react"
+import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
+import { OfflineNotice } from "@/components/offline-notice"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -143,6 +146,18 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
     [config]
   )
   const [step, setStep] = React.useState<Step>("lookup")
+  const router = useRouter()
+
+  /**
+   * The kiosk sitting on its search box between arrivals.
+   *
+   * The per-person data here is already fresh — every tap calls a server action.
+   * What is frozen is the CONFIG this board was rendered with (`config`,
+   * `autoAssignBreakout`, `walkInOpen`), so an admin switching the Breakout step
+   * on mid-event, or opening the door, changed nothing the tablet could see.
+   * See `useKioskRefresh`.
+   */
+  useKioskRefresh(step === "lookup")
   const [query, setQuery] = React.useState("")
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -173,6 +188,9 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
   }
 
   function reset() {
+    // Re-read the config this board was rendered with, for the next arrival —
+    // the same half of the reset the walk-in door's own form does.
+    router.refresh()
     if (nameDebounceTimer.current) clearTimeout(nameDebounceTimer.current)
     setStep("lookup")
     setQuery("")
@@ -263,6 +281,25 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
     handleCandidateSelect(checkinResult)
   }
 
+  /**
+   * Whether this kiosk asks the person which table they want.
+   *
+   * The Check-in form's own toggle decides it, and nothing else does. It used to
+   * also require auto-assign to be off, on the "replaces rather than sits beside"
+   * rule the registration and walk-in forms apply — but at the kiosk that rule
+   * points the other way. An event with auto-assign on had *no* way to ask,
+   * however plainly the Check-in form said to: `handleConfirm` placed the person
+   * a moment earlier, `getCheckinBreakoutChoices` then reported them already
+   * seated, and the step was skipped. Turning the section on looked like it did
+   * nothing.
+   *
+   * So at the door of the room the config wins and auto-assign is what steps
+   * aside — see `handleConfirm`. This is the last moment anyone can ask, and the
+   * person is standing right there; a silent placement is the weaker answer.
+   * Registration and walk-in are unchanged, where nobody is waiting.
+   */
+  const offerBreakoutPicker = cfg.sectionBreakout
+
   async function handleConfirm() {
     if (!matched) return
     setLoading(true)
@@ -282,10 +319,15 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
     // Resolve the registrant's breakout group so the success screen can show it.
     // Volunteers are not breakout participants, so they are never assigned or shown.
     if (matched.kind === "registrant") {
-      // Auto-assign to the best breakout group first — only when the event opts in.
-      // Otherwise the registrant either picked a group at registration or stays
-      // unassigned by choice. We await so the assignment exists before we read it.
-      if (occurrenceId !== null && autoAssignBreakout) {
+      // Auto-assign to the best breakout group first — only when the event opts in
+      // AND this kiosk isn't about to ask. Otherwise the registrant either picked a
+      // group at registration or stays unassigned by choice. We await so the
+      // assignment exists before we read it.
+      //
+      // The `!offerBreakoutPicker` half is what keeps the two from racing: placing
+      // someone here and then asking them would be offering a choice already made,
+      // and the step would in fact never render — it skips anyone already seated.
+      if (occurrenceId !== null && autoAssignBreakout && !offerBreakoutPicker) {
         await autoAssignRegistrantToBreakout(matched.subjectId, eventId)
       }
       const breakout = await getRegistrantBreakoutGroupName(matched.subjectId, eventId)
@@ -341,15 +383,6 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
       void goToSuccess()
     }
   }
-
-  /**
-   * Auto-assign *suppresses* the picker rather than sitting beside it — the same
-   * rule the registration and walk-in forms apply. A table the picker would hide
-   * must not be one auto-assign quietly drops the same person into, and offering
-   * both would let a person choose a group that was already chosen for them a
-   * moment earlier in `handleConfirm`.
-   */
-  const offerBreakoutPicker = cfg.sectionBreakout && !autoAssignBreakout
 
   /**
    * The one way out to the success screen, from every branch above it.
@@ -488,6 +521,9 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
     return (
       <div className="flex flex-col items-center justify-center px-6 py-8">
         <div className="w-full space-y-6">
+          {/* The resting screen is where "is this thing working?" gets asked, and
+              where a cached page looks most convincingly live. */}
+          <OfflineNotice />
           {/* Name search */}
           <div className="space-y-3">
             <div className="space-y-2">

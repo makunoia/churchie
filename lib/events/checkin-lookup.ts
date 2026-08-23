@@ -246,3 +246,40 @@ export async function recordCheckinAttendance(
     })
   }
 }
+
+/**
+ * Undo an attendance record — the exact inverse of `recordCheckinAttendance`,
+ * and here rather than beside its caller so the two lanes stay described in one
+ * place. A check-in lives in one of two shapes depending on the event, and a
+ * remover that knew only one of them would silently no-op on the other.
+ *
+ * `deleteMany` / `updateMany` rather than their single-row twins: if a second
+ * admin cleared the same arrival first, the desired end state already holds, and
+ * reporting a failure would only leave a stale row on this one's screen.
+ */
+export async function clearCheckinAttendance(
+  subject: CheckinSubject,
+  occurrenceId: string | null
+): Promise<void> {
+  if (occurrenceId !== null) {
+    await db.occurrenceAttendee.deleteMany({
+      where:
+        subject.kind === "volunteer"
+          ? { occurrenceId, volunteerId: subject.id }
+          : { occurrenceId, registrantId: subject.id },
+    })
+    return
+  }
+
+  if (subject.kind === "volunteer") {
+    await db.volunteer.updateMany({
+      where: { id: subject.id },
+      data: { attendedAt: null },
+    })
+  } else {
+    await db.eventRegistrant.updateMany({
+      where: { id: subject.id },
+      data: { attendedAt: null },
+    })
+  }
+}

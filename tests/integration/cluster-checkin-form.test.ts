@@ -3,9 +3,10 @@ import { db } from "@/lib/db"
 import {
   checkInToCluster,
   lookupClusterCheckin,
+  removeClusterCheckin,
   searchClusterCheckinByName,
 } from "@/app/(dashboard)/events/cluster-actions"
-import { getClusterRegistrantRows } from "@/lib/clusters/aggregate"
+import { getClusterDayRows, getClusterRegistrantRows } from "@/lib/clusters/aggregate"
 import { buildClusterRoster } from "@/lib/clusters/roster"
 
 /**
@@ -405,5 +406,364 @@ describe("what the kiosk refuses to do", () => {
       success: true,
       data: null,
     })
+  })
+})
+
+/**
+ * The admin board renders the way the session detail screen does now — stat
+ * tiles over a filtered list — and two of its columns are facts the day rows
+ * never carried: the arrival's own time, and the gender behind the tile's
+ * split bar. Both are read from the linked Member or Guest, on the same
+ * day-scoped attendance the `checkedIn` flag beside them already used.
+ */
+describe("what the day's rows carry for the admin board", () => {
+  it("reads gender from the member or the guest behind each row", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await db.member.create({
+      data: {
+        firstName: "Juan",
+        lastName: "Dela Cruz",
+        phone: PHONE,
+        gender: "Male",
+        dateJoined: new Date(),
+        language: [],
+      },
+    })
+    const guest = await db.guest.create({
+      data: { firstName: "Ana", lastName: "Bautista", gender: "Female", language: [] },
+    })
+    await register(oneTime.id, { memberId: member.id })
+    await register(oneTime.id, { guestId: guest.id })
+
+    const rows = await getClusterDayRows(
+      [
+        { id: oneTime.id, linkedOccurrenceId: null },
+        { id: recurring.id, linkedOccurrenceId: session.id },
+      ],
+      { clusterId: cluster.id, date: DAY, kind: "Parallel" }
+    )
+
+    expect(rows.find((r) => r.memberId === member.id)?.gender).toBe("Male")
+    expect(rows.find((r) => r.guestId === guest.id)?.gender).toBe("Female")
+  })
+
+  it("times the arrival on both kinds of event, and leaves it null before one", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await seedMember()
+    const absentee = await seedMember("Pedro", "+63 917 000 1111")
+    await register(oneTime.id, { memberId: member.id })
+    await register(recurring.id, { memberId: member.id })
+    await register(oneTime.id, { memberId: absentee.id })
+
+    const events = [
+      { id: oneTime.id, linkedOccurrenceId: null },
+      { id: recurring.id, linkedOccurrenceId: session.id },
+    ]
+    const before = await getClusterDayRows(events, {
+      clusterId: cluster.id,
+      date: DAY,
+      kind: "Parallel",
+    })
+    expect(before.every((r) => r.checkedInAt === null)).toBe(true)
+
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+
+    const after = await getClusterDayRows(events, {
+      clusterId: cluster.id,
+      date: DAY,
+      kind: "Parallel",
+    })
+    // OneTime records on `attendedAt`, a session through OccurrenceAttendee —
+    // the board reads one column either way.
+    for (const row of after.filter((r) => r.memberId === member.id)) {
+      expect(row.checkedIn).toBe(true)
+      expect(row.checkedInAt).toBeInstanceOf(Date)
+    }
+    // Nobody's absence borrows someone else's timestamp.
+    const missing = after.find((r) => r.memberId === absentee.id)
+    expect(missing?.checkedIn).toBe(false)
+    expect(missing?.checkedInAt).toBeNull()
+  })
+
+  it("times a volunteer's arrival the same way", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await seedMember()
+    await seedVolunteer(oneTime.id, member.id)
+
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+
+    const rows = await getClusterDayRows(
+      [
+        { id: oneTime.id, linkedOccurrenceId: null },
+        { id: recurring.id, linkedOccurrenceId: session.id },
+      ],
+      { clusterId: cluster.id, date: DAY, kind: "Parallel" }
+    )
+    const serving = rows.find((r) => r.kind === "Volunteer")
+    expect(serving?.checkedIn).toBe(true)
+    expect(serving?.checkedInAt).toBeInstanceOf(Date)
+  })
+})
+
+/**
+ * Undoing an arrival from the admin board — the day's answer to the session
+ * screen's "Remove from session". Attendance only: the registration and the
+ * volunteer row are untouched, so the person is still expected on the day.
+ */
+describe("undoing a check-in from the admin board", () => {
+  it("clears both lanes at once — attendedAt and the session's attendance row", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await seedMember()
+    const oneTimeReg = await register(oneTime.id, { memberId: member.id })
+    const recurringReg = await register(recurring.id, { memberId: member.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+
+    const result = await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(result.success).toBe(true)
+    if (!result.success) throw new Error(result.error)
+    expect(result.data.removed.map((r) => r.eventId).sort()).toEqual(
+      [oneTime.id, recurring.id].sort()
+    )
+    // The OneTime lane.
+    const cleared = await db.eventRegistrant.findUnique({ where: { id: oneTimeReg.id } })
+    expect(cleared?.attendedAt).toBeNull()
+    // The session lane.
+    const attendance = await db.occurrenceAttendee.findMany({
+      where: { occurrenceId: session.id, registrantId: recurringReg.id },
+    })
+    expect(attendance).toHaveLength(0)
+  })
+
+  it("leaves the registrations themselves standing", async () => {
+    const { cluster, oneTime, recurring } = await seedDay()
+    const member = await seedMember()
+    await register(oneTime.id, { memberId: member.id })
+    await register(recurring.id, { memberId: member.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    // Still on the day, simply not yet arrived — the whole point of the control.
+    expect(await db.eventRegistrant.count({ where: { memberId: member.id } })).toBe(2)
+  })
+
+  it("undoes a volunteer's arrival the same way", async () => {
+    const { cluster, oneTime } = await seedDay()
+    const member = await seedMember()
+    const volunteer = await seedVolunteer(oneTime.id, member.id)
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+    expect((await db.volunteer.findUnique({ where: { id: volunteer.id } }))?.attendedAt)
+      .not.toBeNull()
+
+    const result = await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(result.success).toBe(true)
+    const after = await db.volunteer.findUnique({ where: { id: volunteer.id } })
+    expect(after?.attendedAt).toBeNull()
+    // The shift itself survives — they are still rostered to serve.
+    expect(after).not.toBeNull()
+  })
+
+  // The board reads the same rows afterwards, so the two can't disagree about
+  // who is in the room.
+  it("puts the person back on the board as not yet arrived", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await seedMember()
+    await register(oneTime.id, { memberId: member.id })
+    await register(recurring.id, { memberId: member.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    const rows = await getClusterDayRows(
+      [
+        { id: oneTime.id, linkedOccurrenceId: null },
+        { id: recurring.id, linkedOccurrenceId: session.id },
+      ],
+      { clusterId: cluster.id, date: DAY, kind: "Parallel" }
+    )
+    expect(rows.every((r) => r.checkedIn === false)).toBe(true)
+    expect(rows.every((r) => r.checkedInAt === null)).toBe(true)
+  })
+
+  /**
+   * Undoing an arrival can also take the person off the board, and that is the
+   * day-scoping rule rather than a side effect of this action: `hasDayEvidence`
+   * counts the day's stamp, the day's check-in, or a sign-up made on the day,
+   * and for a series registrant the arrival was all three. Take it away and the
+   * day has no evidence they were ever here — which is exactly what "not
+   * arrived" now means for them.
+   *
+   * A Parallel day's OneTime registration is unaffected: there the sign-up names
+   * the event, and the event is the day.
+   */
+  it("drops a series registrant off the day, and keeps the OneTime one on it", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await seedMember()
+    await register(oneTime.id, { memberId: member.id })
+    await register(recurring.id, { memberId: member.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    const rows = await getClusterDayRows(
+      [
+        { id: oneTime.id, linkedOccurrenceId: null },
+        { id: recurring.id, linkedOccurrenceId: session.id },
+      ],
+      { clusterId: cluster.id, date: DAY, kind: "Parallel" }
+    )
+    expect(rows.find((r) => r.eventId === oneTime.id)?.onClusterDay).toBe(true)
+    expect(rows.find((r) => r.eventId === recurring.id)?.onClusterDay).toBe(false)
+    // The registration itself is untouched either way — this is a read-side
+    // scoping rule, not a delete.
+    expect(await db.eventRegistrant.count({ where: { memberId: member.id } })).toBe(2)
+  })
+
+  it("is idempotent — a second undo changes nothing and still succeeds", async () => {
+    const { cluster, oneTime } = await seedDay()
+    const member = await seedMember()
+    await register(oneTime.id, { memberId: member.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+    const second = await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(second.success).toBe(true)
+    if (!second.success) throw new Error(second.error)
+    // Nothing left to undo, and the action says so rather than claiming a write.
+    expect(second.data.removed).toEqual([])
+    expect(second.data.skipped.map((s) => s.reason)).toContain("notIn")
+  })
+
+  // Undo, then check in again — the kiosk is the way back, so the cycle has to
+  // close or a mis-tap is permanent.
+  it("lets the kiosk check the same person in again afterwards", async () => {
+    const { cluster, oneTime } = await seedDay()
+    const member = await seedMember()
+    const reg = await register(oneTime.id, { memberId: member.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+
+    const again = await db.eventRegistrant.findUnique({ where: { id: reg.id } })
+    expect(again?.attendedAt).not.toBeNull()
+  })
+
+  it("touches nobody else's arrival", async () => {
+    const { cluster, oneTime } = await seedDay()
+    const member = await seedMember()
+    const other = await seedMember("Pedro", "+63 917 000 1111")
+    await register(oneTime.id, { memberId: member.id })
+    const otherReg = await register(oneTime.id, { memberId: other.id })
+    await checkInToCluster(cluster.publicToken, `member:${member.id}`)
+    await checkInToCluster(cluster.publicToken, `member:${other.id}`)
+
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(
+      (await db.eventRegistrant.findUnique({ where: { id: otherReg.id } }))?.attendedAt
+    ).not.toBeNull()
+  })
+
+  // The security shape `checkInToCluster` set: the caller supplies a person key
+  // and nothing else, so a row outside this cluster resolves to nobody.
+  it("refuses a person key belonging to an event outside the day", async () => {
+    const { cluster } = await seedDay()
+    const outside = await seedOneTime("Someone else's event")
+    const stranger = await seedMember("Rita", "+63 917 222 3333")
+    const strangerReg = await register(outside.id, { memberId: stranger.id })
+    await db.eventRegistrant.update({
+      where: { id: strangerReg.id },
+      data: { attendedAt: new Date() },
+    })
+
+    const result = await removeClusterCheckin(cluster.id, `member:${stranger.id}`)
+
+    expect(result.success).toBe(false)
+    expect(
+      (await db.eventRegistrant.findUnique({ where: { id: strangerReg.id } }))?.attendedAt
+    ).not.toBeNull()
+  })
+
+  it("refuses an empty person key and an unknown cluster", async () => {
+    const { cluster } = await seedDay()
+    expect((await removeClusterCheckin(cluster.id, "   ")).success).toBe(false)
+    expect((await removeClusterCheckin("no-such-cluster", "member:x")).success).toBe(false)
+  })
+
+  // A standing series registrant with no evidence for today is not on the
+  // board, so the board has nothing to undo for them.
+  it("refuses someone who isn't on the day", async () => {
+    const { cluster, recurring } = await seedDay()
+    const member = await seedMember()
+    // Registered on the series, never checked in for this day.
+    await register(recurring.id, { memberId: member.id })
+
+    const result = await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(result.success).toBe(false)
+  })
+
+  // A guest is found by the same key shape a member is.
+  it("undoes a guest's arrival", async () => {
+    const { cluster, oneTime } = await seedDay()
+    const guest = await seedGuest()
+    const reg = await register(oneTime.id, { guestId: guest.id })
+    await checkInToCluster(cluster.publicToken, `guest:${guest.id}`)
+
+    const result = await removeClusterCheckin(cluster.id, `guest:${guest.id}`)
+
+    expect(result.success).toBe(true)
+    expect(
+      (await db.eventRegistrant.findUnique({ where: { id: reg.id } }))?.attendedAt
+    ).toBeNull()
+  })
+
+  // The undo is per person across the day, so a Parallel registrant who arrived
+  // for one of two events has the one arrival cleared and the other reported as
+  // nothing to do — which is what the confirm dialog names.
+  it("clears only the events the person actually arrived on", async () => {
+    const { cluster, oneTime, recurring, session } = await seedDay()
+    const member = await seedMember()
+    const oneTimeReg = await register(oneTime.id, { memberId: member.id })
+    const recurringReg = await register(recurring.id, { memberId: member.id })
+    // Arrived at the session only.
+    await db.occurrenceAttendee.create({
+      data: { occurrenceId: session.id, registrantId: recurringReg.id },
+    })
+
+    const result = await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(result.success).toBe(true)
+    if (!result.success) throw new Error(result.error)
+    expect(result.data.removed.map((r) => r.eventId)).toEqual([recurring.id])
+    expect(result.data.skipped.map((s) => s.eventId)).toEqual([oneTime.id])
+    expect(
+      (await db.eventRegistrant.findUnique({ where: { id: oneTimeReg.id } }))?.attendedAt
+    ).toBeNull()
+  })
+
+  // A stale session on another date is not this day's, and undoing today must
+  // not reach back into it.
+  it("leaves another day's attendance alone", async () => {
+    const { cluster, recurring, session, stale } = await seedDay()
+    const member = await seedMember()
+    const reg = await register(recurring.id, { memberId: member.id })
+    await db.occurrenceAttendee.createMany({
+      data: [
+        { occurrenceId: session.id, registrantId: reg.id },
+        { occurrenceId: stale.id, registrantId: reg.id },
+      ],
+    })
+
+    await removeClusterCheckin(cluster.id, `member:${member.id}`)
+
+    expect(
+      await db.occurrenceAttendee.count({ where: { occurrenceId: session.id } })
+    ).toBe(0)
+    expect(
+      await db.occurrenceAttendee.count({ where: { occurrenceId: stale.id } })
+    ).toBe(1)
   })
 })

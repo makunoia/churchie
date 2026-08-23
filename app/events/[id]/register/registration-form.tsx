@@ -2,10 +2,13 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { IconCheck } from "@tabler/icons-react"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
+import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
+import { OfflineNotice } from "@/components/offline-notice"
 import {
   BARE_EVENT_FORM_CONFIG,
   formLayoutFor,
@@ -318,15 +321,36 @@ type Props = {
 
 // Card wrapper that can render chrome-less for embedding. Defined at module
 // level so its identity is stable across renders (inputs keep focus).
+/**
+ * The wrapper every step of this form returns through — which is why the offline
+ * notice lives here rather than at a dozen call sites. A connection that drops
+ * mid-form matters as much as one that is already down when the door opens, and
+ * the shell is the one place that sees both.
+ */
 function FormShell({
   plain,
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof Card> & { plain?: boolean }) {
+  const body = (
+    <>
+      <OfflineNotice />
+      {children}
+    </>
+  )
   if (plain) {
-    return <div className={cn("flex flex-col gap-6 py-6", className)} {...props} />
+    return (
+      <div className={cn("flex flex-col gap-6 py-6", className)} {...props}>
+        {body}
+      </div>
+    )
   }
-  return <Card className={className} {...props} />
+  return (
+    <Card className={className} {...props}>
+      {body}
+    </Card>
+  )
 }
 
 /**
@@ -432,6 +456,25 @@ export function RegistrationForm({
    */
   const identifyFirst = cfg.fieldMobile
   const [step, setStep] = React.useState<Step>(identifyFirst ? "identify" : "form")
+  const router = useRouter()
+
+  /**
+   * A door tablet waiting for the next person.
+   *
+   * Only the walk-in surface polls. The public form is opened by one registrant
+   * who fills it in and leaves, so there is no window for its data to age in —
+   * whereas the door is opened once and left running, and its candidate list is
+   * gated on which facilitators have checked in, which is *designed* to change
+   * through the morning. See `useKioskRefresh`.
+   *
+   * The identify gate ONLY, and not `"form"` even though a door configured
+   * without a mobile field rests there. `config` decides which sections render,
+   * so a refresh landing on `"form"` would rearrange the questions under someone
+   * already answering them — and on such a door there is no screen that means
+   * "nobody is here yet". Those doors still refresh between people, in
+   * `handleReset`; they just don't poll.
+   */
+  useKioskRefresh(!!walkIn && step === "identify")
   const [form, setForm] = React.useState<FormValues>({
     ...defaultForm,
     lifeStageId: defaultLifeStageId,
@@ -811,6 +854,17 @@ export function RegistrationForm({
   }, [formStep])
 
   function handleReset() {
+    /**
+     * Re-read the server's data for the next person.
+     *
+     * Everything below resets CLIENT state; this is the other half. The breakout
+     * candidates, their counts and the form's own config arrive as props from a
+     * server render, so without this the second walk-in of the morning is offered
+     * the tables — and the headcounts — as they stood when the tablet was first
+     * opened. `router.refresh()` re-runs the server component and leaves the
+     * state reset below alone.
+     */
+    router.refresh()
     // Back to the gate, not to the form: the walk-in kiosk resets between
     // people, and leaving a resolved profile behind would register the next
     // person at the door as the previous one.

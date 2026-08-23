@@ -71,6 +71,46 @@ export function isClusterOwner(
   return "clusterId" in owner
 }
 
+/**
+ * Match a group belonging to ANY of several owners.
+ *
+ * Most queries take one owner, because most surfaces address one set of tables.
+ * Two do not, and both sit inside a Collab day: an event's Catch Mech follows up
+ * on its own standing tables *and* on the day's tables it staffs, and a session
+ * of a member event may need a stand-in for either. Spelled here rather than
+ * inline at those call sites so "a group in one of these sets" has one shape.
+ *
+ * A single owner collapses to that owner rather than to a one-armed `OR`, so the
+ * common case produces exactly the `where` it always did.
+ */
+export function anyOwner(
+  owners: readonly BreakoutOwner[]
+): Prisma.BreakoutGroupWhereInput {
+  if (owners.length === 1) return { ...owners[0] }
+  return { OR: owners.map((o) => ({ ...o })) }
+}
+
+/**
+ * Which of the two sets a surface is filling.
+ *
+ * On a Collab day an event's own standing tables and the day's cluster-owned ones
+ * are both in play, and the *surface* decides which — an event's own registration
+ * form and kiosk fill the event's set, the day's shared form and kiosk fill the
+ * day's. The event id alone cannot answer it, because both answers are valid for
+ * the same event.
+ *
+ * Deliberately a two-value literal rather than a {@link BreakoutOwner}. These
+ * choices are made on public, unauthenticated routes and travel from a client
+ * component to a server action, so an owner would be a caller-supplied *id* —
+ * forgeable into another day's tables. A caller can only name one of the two sets
+ * that `resolvePoolScope` already derived server-side for their own event, and a
+ * person registered on that event is entitled to both, so nothing is escalated.
+ *
+ * `"cluster"` degrades to the event's set wherever no cluster set exists — a
+ * Parallel day, or no cluster at all — rather than erroring.
+ */
+export type BreakoutSet = "event" | "cluster"
+
 /** The owning event id, or null when a cluster owns the group. */
 export function ownerEventId(owner: BreakoutOwner): string | null {
   return isClusterOwner(owner) ? null : owner.eventId

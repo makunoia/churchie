@@ -6,6 +6,7 @@ import {
   breakoutPickerReadiness,
   clusterBreakoutPickerReadiness,
 } from "@/lib/breakout-suggestion-server"
+import { getClusterFormConfig } from "./context-config-server"
 import type { TogglePrerequisites } from "./form-prerequisites"
 
 /**
@@ -62,14 +63,31 @@ export async function clusterFormPrerequisites(
   const globals = await globalFieldPrerequisites()
   if (kind !== ClusterKind.Collab) return globals
 
-  const {
-    totalGroups,
-    enabledGroups,
-    staffedGroups,
-    genderedGroups,
-    eventsWithoutBreakoutModule,
-    eventsAutoAssigning,
-  } = await clusterBreakoutPickerReadiness(clusterId)
+  const [
+    {
+      totalGroups,
+      enabledGroups,
+      staffedGroups,
+      autoAssignableGroups,
+      genderedGroups,
+      eventsWithoutBreakoutModule,
+      eventsAutoAssigning,
+    },
+    checkInConfig,
+  ] = await Promise.all([
+    clusterBreakoutPickerReadiness(clusterId),
+    getClusterFormConfig(clusterId, "CheckIn"),
+  ])
+
+  /**
+   * Whether the day's kiosk asks about tables — which is what decides who gets
+   * placed automatically at registration.
+   *
+   * With it on, the shared form deliberately leaves people unseated so the kiosk
+   * has someone to ask (`deferBreakoutToCheckin` in `registerForCluster`), so the
+   * auto-assign warning below would describe the opposite of what happens.
+   */
+  const asksAtCheckin = checkInConfig.sectionBreakout
 
   const prerequisites: TogglePrerequisites = { ...globals }
 
@@ -104,21 +122,36 @@ export async function clusterFormPrerequisites(
         eventsWithoutBreakoutModule.length === 1 ? "that ministry" : "those ministries"
       } will have their choice ignored. Enable the module in that event's Settings → Modules.`,
     }
-  } else if (eventsAutoAssigning.length > 0) {
+  } else if (
+    eventsAutoAssigning.length > 0 &&
+    !asksAtCheckin &&
+    autoAssignableGroups === 0
+  ) {
+    // Same dead end as the per-event chain: the events place people on submit,
+    // and every table of the day's is held back, so nobody is placed and nobody
+    // is asked. Only reachable when the kiosk isn't asking either — with
+    // `asksAtCheckin` on, registration defers by design and the day's step is
+    // where the question lands.
+    prerequisites.sectionBreakout = {
+      message: `All ${enabledGroups} of this event day's breakout group${
+        enabledGroups === 1 ? " is" : "s are"
+      } set to manual assignment only, so ${listNames(eventsAutoAssigning)} ${
+        eventsAutoAssigning.length === 1 ? "places" : "place"
+      } nobody on submit and anyone who skips this step stays unseated. Clear "Manual assignment only" on a group in Breakouts.`,
+    }
+  } else if (eventsAutoAssigning.length > 0 && !asksAtCheckin) {
     prerequisites.sectionBreakout = {
       message: `${listNames(eventsAutoAssigning)} ${
         eventsAutoAssigning.length === 1 ? "places" : "place"
       } people into a breakout group on submit. A choice made here still wins, but anyone who skips the step is placed for them.`,
     }
   } else if (staffedGroups === 0) {
-    // The two surfaces that run on the day. Both gate on the facilitator being in
-    // the room; the shared registration form offers every enabled group regardless
-    // of staffing, because it is filled in ahead of time.
+    // The door only — see the per-event chain for why the kiosk isn't named.
     prerequisites.sectionBreakout = {
-      message: `On the day, people only see groups whose facilitator has checked in, and none of the ${enabledGroups} breakout group${
+      message: `At the door, people only see groups whose facilitator has checked in, and none of the ${enabledGroups} breakout group${
         enabledGroups === 1 ? " has" : "s have"
-      } a facilitator assigned — so this step won't appear. Assign facilitators in Breakouts.`,
-      contexts: ["WalkIn", "CheckIn"],
+      } a facilitator assigned — so this step won't appear there. Assign facilitators in Breakouts.`,
+      contexts: ["WalkIn"],
     }
   }
 
@@ -173,7 +206,10 @@ export async function eventFormPrerequisites(
   eventId: string,
   autoAssignBreakout: boolean
 ): Promise<TogglePrerequisites> {
-  const [globals, { totalGroups, enabledGroups, staffedGroups, genderedGroups }] = await Promise.all([
+  const [
+    globals,
+    { totalGroups, enabledGroups, staffedGroups, autoAssignableGroups, genderedGroups },
+  ] = await Promise.all([
     globalFieldPrerequisites(),
     breakoutPickerReadiness(eventId),
   ])
@@ -182,7 +218,24 @@ export async function eventFormPrerequisites(
 
   Object.assign(prerequisites, genderFieldPrerequisite(genderedGroups, autoAssignBreakout))
 
-  if (autoAssignBreakout) {
+  if (autoAssignBreakout && enabledGroups > 0 && autoAssignableGroups === 0) {
+    // Auto-assign suppresses the step in favour of a placement that then cannot
+    // happen: every table is held back for manual assignment, so the suggester
+    // has nothing to return and the person is left unseated with no step to
+    // answer. The two switches are individually reasonable and only this pairing
+    // is a dead end, which is why it is called out ahead of the ordinary
+    // auto-assign notice rather than folded into it.
+    prerequisites.sectionBreakout = {
+      message: `Auto-assign is on, so people never see this step — but all ${enabledGroups} of this event's breakout group${
+        enabledGroups === 1 ? " is" : "s are"
+      } set to manual assignment only, so nobody is placed either. Switch to manual below, or clear "Manual assignment only" on a group in Breakouts.`,
+    }
+  } else if (autoAssignBreakout) {
+    // Still true of the kiosk on a single event, and worth saying there: it
+    // withholds its own automatic placement while this section is on, but by then
+    // anyone who pre-registered or came through the door was already placed at
+    // submit, so the step finds them seated and skips. A cluster day is where that
+    // now differs — see `clusterFormPrerequisites`.
     prerequisites.sectionBreakout = {
       message:
         "Auto-assign is on, so people are placed into a breakout group on submit and never see this step. Switch to manual below to let them choose.",
@@ -200,14 +253,16 @@ export async function eventFormPrerequisites(
       } switched off, so there is nothing to offer and the step won't appear. Switch one on in Breakouts.`,
     }
   } else if (staffedGroups === 0) {
-    // The two surfaces that run on the day. Both gate on the facilitator being in
-    // the room; the public registration form offers every enabled group regardless
-    // of staffing, because it is filled in days ahead.
+    // The door only. It hands someone over to a table, so an unstaffed one is a
+    // handover to nobody. The kiosk was named here too and shouldn't have been:
+    // it offers every enabled group ungated, exactly as the registration form
+    // does, because a table whose host hasn't arrived yet is the ordinary state
+    // of the first half hour.
     prerequisites.sectionBreakout = {
-      message: `On the day, people only see groups whose facilitator has checked in, and none of the ${enabledGroups} breakout group${
+      message: `At the door, people only see groups whose facilitator has checked in, and none of the ${enabledGroups} breakout group${
         enabledGroups === 1 ? " has" : "s have"
-      } a facilitator assigned — so this step won't appear. Assign facilitators in Breakouts.`,
-      contexts: ["WalkIn", "CheckIn"],
+      } a facilitator assigned — so this step won't appear there. Assign facilitators in Breakouts.`,
+      contexts: ["WalkIn"],
     }
   }
 

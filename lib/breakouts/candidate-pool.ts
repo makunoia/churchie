@@ -39,9 +39,17 @@ import type { BreakoutOwner } from "./owner"
  * Scoping to the owner asks the question the caller means — "is this person
  * already seated at one of the tables I am filling" — and leaves their standing
  * placement alone.
+ *
+ * ## Why it takes a where-input and not only an owner
+ *
+ * Most callers are filling exactly one set and pass a bare {@link BreakoutOwner},
+ * which is itself a valid group filter. Catch Mech is the exception: on a Collab
+ * day "already seated" spans the event's own tables *and* the day's, so it passes
+ * `CatchMechScope.seatedWhere` — an `OR` over the two. Narrowing the parameter to
+ * one owner there would report everyone at a cluster table as unseated.
  */
 export function unassignedCandidateWhere(
-  owner: BreakoutOwner
+  owner: BreakoutOwner | Prisma.BreakoutGroupWhereInput
 ): Prisma.EventRegistrantWhereInput {
   return {
     breakoutGroupMemberships: { none: { breakoutGroup: owner } },
@@ -74,3 +82,24 @@ export function unassignedCandidateWhere(
  * off aims at the automatic and public routes, not at staff judgment.
  */
 export const ENABLED_BREAKOUT_WHERE = { isEnabled: true } as const satisfies Prisma.BreakoutGroupWhereInput
+
+/**
+ * Groups the system may place someone in *on its own* — enabled, and not held
+ * back for manual assignment.
+ *
+ * The stricter sibling of `ENABLED_BREAKOUT_WHERE`, for a query that feeds a
+ * suggestion with no browse list beside it. Only `matchBreakoutGroups` qualifies:
+ * every one of its callers is an automatic or suggestion surface (the admin match
+ * card, the kiosk's auto-assign, the bulk assign-all), and none of them offers
+ * the admin a full list of tables to pick from afterwards.
+ *
+ * The candidate-loading queries in `breakout-suggestion-server` deliberately do
+ * NOT use this. There one loaded set feeds both the suggester and the dropdown,
+ * so `manualAssignOnly` is applied per-function inside `isEligible` instead —
+ * filtering it in SQL would take the group out of the browse list too, which is
+ * what `isEnabled` already does and what this setting exists to avoid.
+ */
+export const AUTO_ASSIGNABLE_BREAKOUT_WHERE = {
+  ...ENABLED_BREAKOUT_WHERE,
+  manualAssignOnly: false,
+} as const satisfies Prisma.BreakoutGroupWhereInput

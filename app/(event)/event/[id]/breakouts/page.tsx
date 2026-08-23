@@ -5,7 +5,8 @@ import { requireEventModule } from "@/lib/events/require-module"
 import { unassignedCandidateWhere } from "@/lib/breakouts/candidate-pool"
 import { eventSurface } from "@/lib/breakouts/owner"
 import { breakoutGroupsInclude } from "@/lib/breakouts/queries"
-import { resolvePoolScope } from "@/lib/events/pool-scope"
+import { resolvePoolScope, resolveSeatedScope } from "@/lib/events/pool-scope"
+import type { Prisma } from "@/app/generated/prisma/client"
 import { ClusterBreakoutsNotice } from "@/components/breakouts/cluster-breakouts-notice"
 import { auth } from "@/lib/auth"
 import { canImport } from "@/lib/permissions"
@@ -15,7 +16,7 @@ export const metadata: Metadata = {
   title: "Breakout Groups",
 }
 
-async function getEventBreakouts(id: string) {
+async function getEventBreakouts(id: string, seatedScope: Prisma.BreakoutGroupWhereInput) {
   return db.event.findUnique({
     where: { id },
     select: {
@@ -30,7 +31,12 @@ async function getEventBreakouts(id: string) {
       _count: { select: { registrants: true } },
       registrants: {
         select: { id: true },
-        where: unassignedCandidateWhere({ eventId: id }),
+        // `seatedScope`, not a bare `{ eventId }`. On a collab day someone the
+        // day has already seated is placed, and counting them here would both
+        // overstate "N unassigned" and disagree with `autoAssignBreakouts`,
+        // which reads the same scope to decide who it would actually place.
+        // See `resolveSeatedScope`.
+        where: unassignedCandidateWhere(seatedScope),
       },
       volunteers: {
         where: { status: "Confirmed" },
@@ -76,11 +82,12 @@ export default async function BreakoutsPage({
 }) {
   const { id } = await params
   await requireEventModule(id, "Breakout")
-  const [session, event, lifeStages, scope] = await Promise.all([
+  const scope = await resolvePoolScope(id)
+  const seatedScope = await resolveSeatedScope(scope.breakoutOwner)
+  const [session, event, lifeStages] = await Promise.all([
     auth(),
-    getEventBreakouts(id),
+    getEventBreakouts(id, seatedScope),
     db.lifeStage.findMany({ orderBy: { order: "asc" }, select: { id: true, name: true } }),
-    resolvePoolScope(id),
   ])
   if (!event) notFound()
 

@@ -168,14 +168,14 @@ describe("isOnClusterDay", () => {
 
 describe("standingFor", () => {
   it("names the three states a cell can be in", () => {
-    expect(standingFor({ kind: "Registrant" as const, registrantId: "r1", checkedIn: true, onClusterDay: true })).toBe(
+    expect(standingFor({ kind: "Registrant" as const, registrantId: "r1", checkedIn: true, checkedInAt: null, onClusterDay: true })).toBe(
       "CheckedIn"
     )
     expect(
-      standingFor({ kind: "Registrant" as const, registrantId: "r1", checkedIn: false, onClusterDay: true })
+      standingFor({ kind: "Registrant" as const, registrantId: "r1", checkedIn: false, checkedInAt: null, onClusterDay: true })
     ).toBe("OnDay")
     expect(
-      standingFor({ kind: "Registrant" as const, registrantId: "r1", checkedIn: false, onClusterDay: false })
+      standingFor({ kind: "Registrant" as const, registrantId: "r1", checkedIn: false, checkedInAt: null, onClusterDay: false })
     ).toBe("SeriesOnly")
   })
 })
@@ -192,6 +192,8 @@ describe("buildClusterRoster — day scoping is a flag, not a filter", () => {
     lastName: "Noya",
     phone: null,
     isMember: true,
+    gender: null,
+    checkedInAt: null,
     hasLinkedSession: true,
     registrationClusterId: null,
     registeredAt: LONG_BEFORE,
@@ -208,6 +210,7 @@ describe("buildClusterRoster — day scoping is a flag, not a filter", () => {
       registrantId: "r1",
       kind: "Registrant",
       checkedIn: false,
+      checkedInAt: null,
       onClusterDay: false,
     })
     expect(standingFor(roster.rows[0].perEvent.e1!)).toBe("SeriesOnly")
@@ -366,6 +369,8 @@ describe("the roster's person type", () => {
     lastName: "Noya",
     phone: null,
     isMember: true,
+    gender: null,
+    checkedInAt: null,
     hasLinkedSession: true,
     registrationClusterId: null,
     registeredAt: LONG_BEFORE,

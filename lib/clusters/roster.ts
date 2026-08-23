@@ -36,7 +36,19 @@ export type ClusterRegistrantRow = {
   lastName: string
   phone: string | null
   isMember: boolean
+  /**
+   * Male/Female where the linked Member or Guest states one. Spelled as the
+   * string union rather than Prisma's `Gender` so this module stays importable
+   * from a client component — the same reason {@link ClusterKindName} exists.
+   */
+  gender: ClusterGender
   checkedIn: boolean
+  /**
+   * When they arrived, for the day's reading of attendance — `attendedAt` on a
+   * OneTime event, the scoped `OccurrenceAttendee` otherwise. Null whenever
+   * `checkedIn` is false, and also for legacy rows that recorded no time.
+   */
+  checkedInAt: Date | null
   /** The cluster link names an explicit session for this row's event. */
   hasLinkedSession: boolean
   /** The cluster whose shared link this registration came through, if any. */
@@ -70,6 +82,9 @@ export type ClusterDayScope = {
 
 /** Prisma's `ClusterKind`, as a type only — see {@link ClusterDayScope}. */
 export type ClusterKindName = "Parallel" | "Collab"
+
+/** Prisma's `Gender`, as a type only — see {@link ClusterRegistrantRow.gender}. */
+export type ClusterGender = "Male" | "Female" | null
 
 /**
  * Does this registration belong to the cluster's day?
@@ -243,6 +258,8 @@ export type ClusterRosterCell = {
   registrantId: string
   kind: ClusterParticipantKind
   checkedIn: boolean
+  /** When they arrived on this event — see {@link ClusterRegistrantRow.checkedInAt}. */
+  checkedInAt: Date | null
   /** The registration counts toward the cluster's day. */
   onClusterDay: boolean
 }
@@ -278,6 +295,13 @@ export type ClusterRosterPerson = {
   lastName: string
   phone: string | null
   isMember: boolean
+  /**
+   * First stated gender across the person's records. They are one person, so
+   * the answer cannot differ between their rows — but a walk-in row carries no
+   * profile, and taking the first non-null is what keeps that row from erasing
+   * an answer the Member record already holds.
+   */
+  gender: ClusterGender
   /** They are serving on at least one of the day's events. */
   isVolunteer: boolean
   perEvent: Record<string, ClusterRosterCell | undefined>
@@ -334,16 +358,19 @@ export function buildClusterRoster(
         lastName: row.lastName,
         phone: row.phone,
         isMember: row.isMember,
+        gender: null,
         isVolunteer: false,
         perEvent: {},
       }
       byPerson.set(key, person)
     }
     if (row.kind === "Volunteer") person.isVolunteer = true
+    person.gender ??= row.gender
     const cell: ClusterRosterCell = {
       registrantId: row.id,
       kind: row.kind,
       checkedIn: row.checkedIn,
+      checkedInAt: row.checkedInAt,
       onClusterDay: row.onClusterDay,
     }
     // A person can hold two records on the SAME event — a duplicate sign-up, or

@@ -245,6 +245,23 @@ describe("checkin-board – walk-in link", () => {
     // form now, so a stale or hand-edited URL cannot re-aim the door.
     expect(board).not.toContain("?checkin=")
   })
+
+  it("offers the breakout step on the config alone, not on auto-assign being off", () => {
+    // At the kiosk the Check-in form's toggle is the whole rule. Requiring
+    // auto-assign to be off as well meant an event with it on had no way to ask,
+    // however plainly the form said to — `handleConfirm` placed the person a
+    // moment earlier and the step then skipped them as already seated.
+    expect(board).toContain("const offerBreakoutPicker = cfg.sectionBreakout")
+    expect(board).not.toContain("cfg.sectionBreakout && !autoAssignBreakout")
+  })
+
+  it("stands auto-assign down whenever the kiosk is going to ask", () => {
+    // The other half of the same rule: config wins, so auto-assign is what steps
+    // aside. Without this the two race and the picker can never render.
+    expect(board).toContain(
+      "occurrenceId !== null && autoAssignBreakout && !offerBreakoutPicker"
+    )
+  })
 })
 
 describe("register page – pre-registration only", () => {

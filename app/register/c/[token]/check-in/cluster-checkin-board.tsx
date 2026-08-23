@@ -2,7 +2,10 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { IconCheck, IconLoader2, IconUserQuestion } from "@tabler/icons-react"
+import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
+import { OfflineNotice } from "@/components/offline-notice"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -87,6 +90,10 @@ export function ClusterCheckinBoard({
   /** A collab never names the day's events; a parallel day always does. */
   const showEvents = kind !== "Collab"
   const [step, setStep] = React.useState<Step>("lookup")
+  const router = useRouter()
+
+  /** The day's kiosk waiting for the next arrival — see `useKioskRefresh`. */
+  useKioskRefresh(step === "lookup")
   const [query, setQuery] = React.useState("")
   const [nameQuery, setNameQuery] = React.useState("")
   const [nameResults, setNameResults] = React.useState<ClusterCheckinPerson[]>([])
@@ -106,6 +113,9 @@ export function ClusterCheckinBoard({
   const nameDebounceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const reset = React.useCallback(() => {
+    // Re-read the day's config for the next arrival. Same reasoning as the
+    // per-event board — see `useKioskRefresh`.
+    router.refresh()
     if (nameDebounceTimer.current) clearTimeout(nameDebounceTimer.current)
     setStep("lookup")
     setQuery("")
@@ -121,7 +131,7 @@ export function ClusterCheckinBoard({
     setLoading(false)
     setError(null)
     setTimeout(() => inputRef.current?.focus(), 50)
-  }, [])
+  }, [router])
 
   React.useEffect(() => {
     inputRef.current?.focus()
@@ -203,7 +213,10 @@ export function ClusterCheckinBoard({
       const choices = await getCheckinBreakoutChoices(
         subject.registrantId,
         subject.eventId,
-        subject.occurrenceId
+        subject.occurrenceId,
+        // The day's tables, not the member event's standing set. Both are in play
+        // for this person; the kiosk they are standing at is what decides.
+        "cluster"
       )
       setLoading(false)
       if (choices.success && choices.data && !choices.data.seatedGroupName) {
@@ -236,7 +249,8 @@ export function ClusterCheckinBoard({
       breakoutSubject.registrantId,
       breakoutSubject.eventId,
       breakoutSubject.occurrenceId,
-      selectedBreakoutId
+      selectedBreakoutId,
+      "cluster"
     )
     setLoading(false)
     if (!result.success) {
@@ -251,6 +265,9 @@ export function ClusterCheckinBoard({
     return (
       <div className="flex flex-col items-center justify-center px-6 py-8">
         <div className="w-full space-y-6">
+          {/* See the per-event board — the resting screen is where a cached page
+              looks most convincingly live. */}
+          <OfflineNotice />
           <div className="space-y-3">
             <div className="space-y-2">
               <Label htmlFor="cluster-checkin-name">Search by name</Label>

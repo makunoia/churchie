@@ -36,6 +36,7 @@ function makeGroup(
     lifeStageIds: [],
     ageRangeMin: null,
     ageRangeMax: null,
+    manualAssignOnly: false,
     isFull: occupancy.isFull,
     fillLevel: memberLimit == null || memberLimit === 0 ? 0 : memberCount / memberLimit,
     occupancy: { memberCount, memberLimit },
@@ -337,6 +338,36 @@ describe("suggestBreakoutGroup", () => {
     })
   })
 
+  describe("manual assignment only", () => {
+    // The whole point of the setting: the suggester and the dropdown are fed by
+    // one candidate set, and this is the one field they are meant to disagree
+    // about. `assignBreakoutForRegistrant` auto-assigns through this same
+    // function, so these cases pin auto-assign's behaviour too.
+    it("is never suggested, even as the only candidate", () => {
+      const groups = [makeGroup({ id: "reserve", manualAssignOnly: true })]
+      expect(suggestBreakoutGroup(groups, { gender: null, birthYear: null })).toBeNull()
+    })
+
+    it("is skipped over in favour of the next-best table", () => {
+      // The emptiest table is the held-back one, so a suggester that ignored the
+      // flag would name it. The answer is the fuller table that is still in play.
+      const groups = [
+        makeGroup({ id: "reserve", fillLevel: 0.0, manualAssignOnly: true }),
+        makeGroup({ id: "open", fillLevel: 0.8 }),
+      ]
+      expect(suggestBreakoutGroup(groups, { gender: null, birthYear: null })?.id).toBe("open")
+    })
+
+    it("does not suppress a suggestion when some other table qualifies", () => {
+      const groups = [
+        makeGroup({ id: "reserve", manualAssignOnly: true }),
+        makeGroup({ id: "a", fillLevel: 0.3 }),
+        makeGroup({ id: "b", fillLevel: 0.5 }),
+      ]
+      expect(suggestBreakoutGroup(groups, { gender: "Male", birthYear: 1995 })?.id).toBe("a")
+    })
+  })
+
   describe("empty / edge cases", () => {
     it("returns null when no groups are provided", () => {
       expect(suggestBreakoutGroup([], { gender: "Male", birthYear: null })).toBeNull()
@@ -504,6 +535,27 @@ describe("breakoutPickerOptions", () => {
       expect(breakoutPickerOptions(groups, profile)[0].id).toBe(
         suggestBreakoutGroup(groups, profile)?.id
       )
+    })
+
+    // Regression: the dropdown is the half of the split that must NOT change.
+    // Filtering `manualAssignOnly` in the candidate query — the obvious way to
+    // build this — would take the table out of here too, which is exactly what
+    // `isEnabled: false` already does and what the setting exists to avoid.
+    it("still offers a manual-only group, in its rightful rank position", () => {
+      const groups = [
+        makeGroup({ id: "fuller", fillLevel: 0.8 }),
+        makeGroup({ id: "reserve", fillLevel: 0.1, manualAssignOnly: true }),
+      ]
+      // Not merely present — still first, because it really is the emptiest.
+      expect(breakoutPickerOptions(groups).map((g) => g.id)).toEqual(["reserve", "fuller"])
+    })
+
+    it("offers a manual-only group even when it is the only one", () => {
+      const groups = [makeGroup({ id: "reserve", manualAssignOnly: true })]
+      const profile = { gender: "Male" as const, birthYear: 1995 }
+      // The one case where the card and the dropdown deliberately disagree.
+      expect(breakoutPickerOptions(groups, profile).map((g) => g.id)).toEqual(["reserve"])
+      expect(suggestBreakoutGroup(groups, profile)).toBeNull()
     })
 
     it("falls back to specificity when two groups are equally empty", () => {

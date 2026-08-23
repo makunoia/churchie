@@ -47,21 +47,33 @@ export const COLUMN_WIDTHS = {
   status: { size: 140, min: 96 },
   /**
    * A formatted date, optionally with a time beneath it. The floor is measured
-   * rather than guessed: `Aug 20, 2026` is 88px at the table's type size, plus
-   * the cell's 32px inset. A date is worthless clipped — `Aug 20, 20…` says
-   * nothing the header didn't — so it holds its floor before it truncates.
+   * rather than guessed, and measured against the *widest* date rather than a
+   * typical one: `May 00, 2026` is 90.5px at the table's type size — May is the
+   * widest month and 0 the widest digit — plus the cell's 32px inset. A date is
+   * worthless clipped (`May 20, 20…` says nothing the header didn't), so it
+   * holds its floor before it truncates.
+   *
+   * The widest date the column can actually be handed is `May 20, 2000` at
+   * 91.5px — widest month, widest two-digit day, widest year — so the floor
+   * carries a couple of pixels over that. The previous 120 was 88px for
+   * `Aug 20, 2026` and not a pixel more, which `Nov 20, 2026` already
+   * overflowed. A floor with no headroom is a floor that only holds for the
+   * one string it was measured against.
    */
-  date: { size: 132, min: 120 },
+  date: { size: 132, min: 126 },
   /**
    * `"+63 XXX XXX XXXX"` is a fixed shape and shouldn't ever wrap or clip — a
    * truncated phone number is worse than useless, since it still looks like one
-   * you could dial. 126px for the widest set of digits (a number of 8s and 9s
-   * is 25px wider than one of 1s), the cell's 32px inset, and the 20px the copy
-   * affordance holds open beside them — `CopyableText` keeps its icon in the
-   * layout and only fades it in, so the text box is that much narrower than the
-   * column it sits in.
+   * you could dial. 129px for the widest set of digits (0 is the widest glyph
+   * in the face, and an all-zero number is 44px wider than one of 1s), the
+   * cell's 32px inset, and the 20px the copy affordance holds open beside them
+   * — `CopyableText` keeps its icon in the layout and only fades it in, so the
+   * text box is that much narrower than the column it sits in. Plus the same
+   * few pixels of slack the date column carries, and for the same reason: at
+   * exactly 180 the number filled its box to the pixel and clipped the moment
+   * anything measured a hair wider.
    */
-  phone: { size: 180, min: 180 },
+  phone: { size: 184, min: 184 },
   /** A person's or group's name. */
   name: { size: 220, min: 140 },
   email: { size: 240, min: 150 },

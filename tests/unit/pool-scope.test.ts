@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   breakoutOwnerFor,
+  clusterBreakoutOwnerFor,
   isPooled,
   poolEventIdsFor,
   poolScopeFor,
@@ -60,13 +61,20 @@ describe("poolEventIdsFor", () => {
 })
 
 describe("breakoutOwnerFor", () => {
-  it("hands back the event for no cluster and for Parallel", () => {
+  it("always hands back the event — an event keeps its own pool", () => {
     expect(breakoutOwnerFor(YOUTH, null)).toEqual({ eventId: YOUTH })
     expect(breakoutOwnerFor(YOUTH, link("Parallel"))).toEqual({ eventId: YOUTH })
+    // The reversal: a Collab used to substitute the cluster here, which took the
+    // event's tables — and its whole Catch Mech history — off every event screen.
+    expect(breakoutOwnerFor(YOUTH, link("Collab"))).toEqual({ eventId: YOUTH })
   })
+})
 
-  it("hands back the cluster for a Collab — the day owns its tables", () => {
-    expect(breakoutOwnerFor(YOUTH, link("Collab"))).toEqual({ clusterId: "clu-1" })
+describe("clusterBreakoutOwnerFor", () => {
+  it("names the day's own set only on a Collab", () => {
+    expect(clusterBreakoutOwnerFor(null)).toBeNull()
+    expect(clusterBreakoutOwnerFor(link("Parallel"))).toBeNull()
+    expect(clusterBreakoutOwnerFor(link("Collab"))).toEqual({ clusterId: "clu-1" })
   })
 })
 
@@ -84,14 +92,17 @@ describe("poolScopeFor", () => {
     expect(scope.volunteerEventIds).toEqual([YOUTH])
     expect(scope.candidateEventIds).toEqual([YOUTH])
     expect(scope.breakoutOwner).toEqual({ eventId: YOUTH })
+    expect(scope.clusterBreakoutOwner).toBeNull()
     expect(scope.kind).toBe("Parallel")
   })
 
-  it("splits owner from candidates on a collab", () => {
+  it("carries both table sets on a collab, neither replacing the other", () => {
     const scope = poolScopeFor(YOUTH, link("Collab"))
-    // The tables belong to no event at all…
-    expect(scope.breakoutOwner).toEqual({ clusterId: "clu-1" })
-    // …while the people who may sit at them come from both.
+    // The event keeps its own standing tables…
+    expect(scope.breakoutOwner).toEqual({ eventId: YOUTH })
+    // …and the day's fresh set is named beside them rather than in place of them.
+    expect(scope.clusterBreakoutOwner).toEqual({ clusterId: "clu-1" })
+    // Volunteers still pool as one roster; that half is unchanged.
     expect(scope.candidateEventIds).toEqual([YOUTH, SINGLES])
     expect(scope.volunteerEventIds).toEqual([YOUTH, SINGLES])
     expect(scope.clusterName).toBe("Youth × Singles Night")

@@ -158,6 +158,20 @@ function pickAttendance<T extends { occurrenceId: string }>(
 }
 
 /**
+ * The arrival, from the attendance rows that count for this row's event.
+ *
+ * Usually there is exactly one. An unlinked event on a dateless cluster reads
+ * every session's attendance, so the earliest is the one that describes when
+ * this person first turned up.
+ */
+function earliestCheckIn(attendances: { checkedInAt: Date }[]): Date | null {
+  if (attendances.length === 0) return null
+  return attendances.reduce((earliest, a) =>
+    a.checkedInAt < earliest.checkedInAt ? a : earliest
+  ).checkedInAt
+}
+
+/**
  * Flat registrant rows (with check-in state) for a set of cluster events,
  * scoped to the day the cluster represents.
  *
@@ -205,18 +219,23 @@ export async function getClusterRegistrantRows(
       attendedAt: true,
       createdAt: true,
       registrationClusterId: true,
-      member: { select: { firstName: true, lastName: true, phone: true } },
-      guest: { select: { firstName: true, lastName: true, phone: true } },
+      member: {
+        select: { firstName: true, lastName: true, phone: true, gender: true },
+      },
+      guest: {
+        select: { firstName: true, lastName: true, phone: true, gender: true },
+      },
       event: { select: { type: true } },
       occurrenceAttendances: {
         ...occurrenceScopeFilter(events, scope),
-        select: { occurrenceId: true },
+        select: { occurrenceId: true, checkedInAt: true },
         take: 3,
       },
     },
   })
   const rows = registrants.map((r) => {
     const linked = linkedByEvent.get(r.eventId) ?? null
+    const attendance = pickAttendance(r.occurrenceAttendances, linked)
     const row = {
       id: r.id,
       kind: "Registrant" as const,
@@ -228,11 +247,15 @@ export async function getClusterRegistrantRows(
       lastName: r.member?.lastName ?? r.guest?.lastName ?? r.lastName ?? "",
       phone: r.member?.phone ?? r.guest?.phone ?? null,
       isMember: r.memberId !== null,
+      gender: r.member?.gender ?? r.guest?.gender ?? null,
       // OneTime events check in via attendedAt; session events via occurrences.
       checkedIn:
-        r.event.type === "OneTime"
-          ? r.attendedAt !== null
-          : pickAttendance(r.occurrenceAttendances, linked).length > 0,
+        r.event.type === "OneTime" ? r.attendedAt !== null : attendance.length > 0,
+      // The arrival itself, from whichever record the check-in landed on. A
+      // session event can hold several in scope (an unlinked event on a dateless
+      // cluster reads them all), so the earliest is the arrival.
+      checkedInAt:
+        r.event.type === "OneTime" ? r.attendedAt : earliestCheckIn(attendance),
       hasLinkedSession: linked !== null,
       registrationClusterId: r.registrationClusterId,
       registeredAt: r.createdAt,
@@ -274,11 +297,13 @@ export async function getClusterVolunteerRows(
       attendedAt: true,
       createdAt: true,
       signUpClusterId: true,
-      member: { select: { firstName: true, lastName: true, phone: true } },
+      member: {
+        select: { firstName: true, lastName: true, phone: true, gender: true },
+      },
       event: { select: { type: true } },
       occurrenceAttendances: {
         ...occurrenceScopeFilter(events, scope),
-        select: { occurrenceId: true },
+        select: { occurrenceId: true, checkedInAt: true },
         take: 3,
       },
     },
@@ -286,6 +311,7 @@ export async function getClusterVolunteerRows(
   return volunteers
     .map((v) => {
       const linked = linkedByEvent.get(v.eventId) ?? null
+      const attendance = pickAttendance(v.occurrenceAttendances, linked)
       const row: ClusterRegistrantRow = {
         id: v.id,
         kind: "Volunteer" as const,
@@ -298,12 +324,13 @@ export async function getClusterVolunteerRows(
         lastName: v.member.lastName,
         phone: v.member.phone,
         isMember: true,
+        gender: v.member.gender,
         // Symmetric to a registrant: OneTime events mark attendance on the row,
         // session events through `OccurrenceAttendee`.
         checkedIn:
-          v.event.type === "OneTime"
-            ? v.attendedAt !== null
-            : pickAttendance(v.occurrenceAttendances, linked).length > 0,
+          v.event.type === "OneTime" ? v.attendedAt !== null : attendance.length > 0,
+        checkedInAt:
+          v.event.type === "OneTime" ? v.attendedAt : earliestCheckIn(attendance),
         hasLinkedSession: linked !== null,
         registrationClusterId: v.signUpClusterId,
         registeredAt: v.createdAt,

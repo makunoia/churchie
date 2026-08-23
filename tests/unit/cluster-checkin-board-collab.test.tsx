@@ -1,10 +1,27 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { render, screen } from "@testing-library/react"
 
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { ClusterCheckinClient } from "@/app/(event)/cluster/[id]/checkin/checkin-client"
 import { ClusterCheckinShortcuts } from "@/app/(event)/cluster/[id]/checkin/checkin-shortcuts"
 import type { ClusterCheckinShortcut } from "@/lib/clusters/checkin-shortcuts"
+import type { ClusterCheckinPerson } from "@/lib/clusters/checkin-board"
+
+// The board is a client component that refreshes after an undo, and reaches the
+// server action to do it. Neither exists in jsdom.
+const { removeClusterCheckin } = vi.hoisted(() => ({
+  removeClusterCheckin: vi.fn(async () => ({
+    success: true as const,
+    data: { removed: [{ eventId: "e-youth", eventName: "Youth Night" }], skipped: [] },
+  })),
+}))
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}))
+
+vi.mock("@/app/(dashboard)/events/cluster-actions", () => ({ removeClusterCheckin }))
 
 /**
  * The ADMIN check-in board on a Collab day.
@@ -45,15 +62,120 @@ function renderShortcuts(shortcuts: ClusterCheckinShortcut[]) {
   )
 }
 
-const person = (overrides: Partial<React.ComponentProps<typeof ClusterCheckinClient>["people"][number]> = {}) => ({
+const person = (
+  overrides: Partial<ClusterCheckinPerson> = {}
+): ClusterCheckinPerson => ({
   key: "member:m1",
   name: "Maria Cruz",
   phone: "+63 917 111 2222",
   isMember: true,
   isVolunteer: false,
-  events: [{ eventId: "e-youth", eventName: "Youth Night", checkedIn: false }],
-  fullyCheckedIn: false,
+  gender: null,
+  events: [
+    {
+      eventId: "e-youth",
+      eventName: "Youth Night",
+      registrantId: "r1",
+      kind: "Registrant",
+      checkedIn: false,
+    },
+  ],
+  checkedInAtFormatted: null,
   ...overrides,
+})
+
+/**
+ * The board renders its card list and its table together — CSS hides one at a
+ * time, and jsdom applies no CSS — so every row's text is on screen twice.
+ * Asserting on presence rather than count is what keeps these tests about the
+ * board's rules instead of its breakpoints.
+ */
+function renderBoard(props: Partial<React.ComponentProps<typeof ClusterCheckinClient>> = {}) {
+  // `app/layout.tsx` mounts the provider for the whole app, so the board uses a
+  // bare `Tooltip` the way every other screen does; the test supplies what the
+  // layout would.
+  return render(
+    <TooltipProvider>
+      <ClusterCheckinClient
+        clusterId="c1"
+        people={[person()]}
+        events={[{ id: "e-youth", name: "Youth Night" }]}
+        hasCheckinEvents
+        {...props}
+      />
+    </TooltipProvider>
+  )
+}
+
+/**
+ * Undoing an arrival — the board's answer to the session screen's "Remove from
+ * session". The write itself is pinned in the integration test; what matters
+ * here is who is offered the control at all.
+ */
+describe("collab admin board — undoing a check-in", () => {
+  const arrived = person({
+    events: [
+      {
+        eventId: "e-youth",
+        eventName: "Youth Night",
+        registrantId: "r1",
+        kind: "Registrant",
+        checkedIn: true,
+      },
+    ],
+    checkedInAtFormatted: "09:14 AM",
+  })
+
+  it("offers it on an arrival when the staffer may write", () => {
+    renderBoard({ people: [arrived], canEdit: true })
+    expect(screen.getAllByRole("button", { name: "Undo check-in" }).length).toBeGreaterThan(0)
+  })
+
+  // Read-only staff monitor the day; they don't correct it.
+  it("withholds it without write access", () => {
+    renderBoard({ people: [arrived] })
+    expect(screen.queryByRole("button", { name: "Undo check-in" })).toBeNull()
+  })
+
+  // Hidden, not disabled: a column of dead controls down every un-arrived row
+  // is noise on the list the board exists to show, and there is no arrival to
+  // explain away.
+  it("withholds it from someone who never arrived", () => {
+    renderBoard({ people: [person()], canEdit: true })
+    expect(screen.queryByRole("button", { name: "Undo check-in" })).toBeNull()
+  })
+
+  // A Parallel registrant part-way through the day still has something to undo.
+  it("offers it on a partial arrival", () => {
+    renderBoard({
+      canEdit: true,
+      events: [
+        { id: "e-youth", name: "Youth Night" },
+        { id: "e-kids", name: "Kids Church" },
+      ],
+      people: [
+        person({
+          events: [
+            {
+              eventId: "e-youth",
+              eventName: "Youth Night",
+              registrantId: "r1",
+              kind: "Registrant",
+              checkedIn: true,
+            },
+            {
+              eventId: "e-kids",
+              eventName: "Kids Church",
+              registrantId: "r2",
+              kind: "Registrant",
+              checkedIn: false,
+            },
+          ],
+        }),
+      ],
+    })
+    expect(screen.getAllByRole("button", { name: "Undo check-in" }).length).toBeGreaterThan(0)
+  })
 })
 
 describe("collab admin board — Shortcuts", () => {
@@ -82,43 +204,102 @@ describe("collab admin board — Shortcuts", () => {
 
 describe("collab admin board — Arrivals", () => {
   it("drops the per-event badge from every row", () => {
-    render(
-      <ClusterCheckinClient
-        people={[person()]}
-        hasCheckinEvents
-        showEventBreakdown={false}
-      />
-    )
-    expect(screen.getByText("Maria Cruz")).toBeTruthy()
+    renderBoard({ events: [], showEventBreakdown: false })
+    expect(screen.getAllByText("Maria Cruz").length).toBeGreaterThan(0)
     expect(screen.queryByText("Youth Night")).toBeNull()
   })
 
   // The badges were what said "not here yet". Collapsed, the row has to say it.
   it("says in words whether each person is in", () => {
-    render(
-      <ClusterCheckinClient
-        people={[
-          person(),
-          person({
-            key: "member:m2",
-            name: "Jon Reyes",
-            events: [{ eventId: "e-youth", eventName: "Youth Night", checkedIn: true }],
-            fullyCheckedIn: true,
-          }),
-        ]}
-        hasCheckinEvents
-        showEventBreakdown={false}
-      />
-    )
-    expect(screen.getByText("Not in yet")).toBeTruthy()
-    expect(screen.getByText("Checked in")).toBeTruthy()
+    renderBoard({
+      events: [],
+      showEventBreakdown: false,
+      people: [
+        person(),
+        person({
+          key: "member:m2",
+          name: "Jon Reyes",
+          events: [
+            {
+              eventId: "e-youth",
+              eventName: "Youth Night",
+              registrantId: "r2",
+              kind: "Registrant",
+              checkedIn: true,
+            },
+          ],
+        }),
+      ],
+    })
+    expect(screen.getAllByText("Not in yet").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Checked in").length).toBeGreaterThan(0)
   })
 
-  // With the badges on, "Checked in" beside an already-filled badge row is the
-  // page saying one thing twice — so the collapsed-only label must stay off.
-  it("keeps the badges and no 'Not in yet' on a parallel day", () => {
-    render(<ClusterCheckinClient people={[person()]} hasCheckinEvents />)
-    expect(screen.getByText("Youth Night")).toBeTruthy()
-    expect(screen.queryByText("Not in yet")).toBeNull()
+  // The event filter is a Collab-day control with nothing to do: everyone holds
+  // the one event, so every option selects the whole list.
+  it("offers no event filter on a collab day", () => {
+    renderBoard({ events: [], showEventBreakdown: false })
+    expect(screen.queryByText("All events")).toBeNull()
+  })
+
+  // On a Parallel day the two say different things: the badges name WHICH
+  // events someone is in for, the status column says where they stand on the
+  // day as a whole — which is the only place "Partly in" can be said at all.
+  it("keeps the badges and states the whole-day status beside them", () => {
+    renderBoard({
+      people: [
+        person({
+          events: [
+            {
+              eventId: "e-youth",
+              eventName: "Youth Night",
+              registrantId: "r1",
+              kind: "Registrant",
+              checkedIn: true,
+            },
+            {
+              eventId: "e-kids",
+              eventName: "Kids Church",
+              registrantId: "r2",
+              kind: "Registrant",
+              checkedIn: false,
+            },
+          ],
+        }),
+      ],
+      events: [
+        { id: "e-youth", name: "Youth Night" },
+        { id: "e-kids", name: "Kids Church" },
+      ],
+    })
+    expect(screen.getAllByText("Youth Night").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Kids Church").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Partly in").length).toBeGreaterThan(0)
+  })
+
+  // The board dead-ended before: a name on it was plain text, so the record
+  // behind an arrival could only be found by leaving for another screen.
+  it("routes each name to the record behind it", () => {
+    renderBoard({
+      people: [
+        person({
+          isVolunteer: true,
+          events: [
+            {
+              eventId: "e-youth",
+              eventName: "Youth Night",
+              registrantId: "v9",
+              kind: "Volunteer",
+              checkedIn: true,
+            },
+          ],
+        }),
+      ],
+    })
+    const links = screen.getAllByRole("link", { name: "Maria Cruz" })
+    expect(links.length).toBeGreaterThan(0)
+    // A volunteer's record lives on the volunteers screen — `/registrants/v9`
+    // would 404 on an id that table has never held.
+    expect(links[0].getAttribute("href")).toBe("/event/e-youth/volunteers/v9")
   })
 })

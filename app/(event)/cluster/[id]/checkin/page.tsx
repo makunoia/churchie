@@ -1,5 +1,6 @@
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
+import { Target, UserCheck, UserRoundCheck, Users } from "lucide-react"
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
 import {
@@ -9,9 +10,16 @@ import {
 } from "@/lib/clusters/aggregate"
 import { clusterOffersPerEventCheckin } from "@/lib/clusters/checkin-shortcuts"
 import { buildClusterRoster } from "@/lib/clusters/roster"
+import {
+  buildClusterCheckinStats,
+  formatClusterCheckinRatio,
+  type ClusterCheckinPerson,
+} from "@/lib/clusters/checkin-board"
+import { formatTurnoutRate } from "@/lib/events/turnout"
 import { canWrite } from "@/lib/permissions"
 import { clusterCheckinPath, clusterWalkInPath } from "@/lib/public-routes"
 import { DetailPageHeader } from "@/components/detail-page-header"
+import { StatCard } from "@/components/session-stat-card"
 import { ClusterCheckinClient } from "./checkin-client"
 import { ClusterCheckinShortcuts } from "./checkin-shortcuts"
 
@@ -76,36 +84,53 @@ export default async function ClusterCheckinPage({
     : []
   const writable = canWrite(session, "Events")
 
-  const people = roster.rows.map((person) => {
+  const people: ClusterCheckinPerson[] = roster.rows.map((person) => {
     const cells = events
       .map((e) => ({ event: e, cell: person.perEvent[e.id] }))
       .filter((c) => c.cell !== undefined)
+    // Their arrival, on whichever of the day's events they reached first. The
+    // hour is formatted here rather than in the client: timestamps are stored in
+    // UTC and read in Manila time, and formatting on both sides of hydration is
+    // how the two come to disagree about what time it is.
+    const arrivals = cells
+      .map((c) => c.cell!.checkedInAt)
+      .filter((at): at is Date => at !== null)
+    const earliest = arrivals.reduce<Date | null>(
+      (soonest, at) => (soonest === null || at < soonest ? at : soonest),
+      null
+    )
     return {
       key: person.key,
       name: `${person.firstName} ${person.lastName}`.trim(),
       phone: person.phone,
       isMember: person.isMember,
       isVolunteer: person.isVolunteer,
+      gender: person.gender,
       events: cells.map((c) => ({
         eventId: c.event.id,
         eventName: c.event.name,
+        registrantId: c.cell!.registrantId,
+        kind: c.cell!.kind,
         checkedIn: c.cell!.checkedIn,
       })),
-      fullyCheckedIn: cells.length > 0 && cells.every((c) => c.cell!.checkedIn),
+      checkedInAtFormatted:
+        earliest?.toLocaleTimeString("en-PH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: "Asia/Manila",
+        }) ?? null,
     }
   })
 
-  const checkedInCount = people.filter((p) =>
-    p.events.some((e) => e.checkedIn)
-  ).length
+  const stats = buildClusterCheckinStats(people)
 
   return (
     <>
-      {/* The two figures live in the subtitle and nowhere else. A pair of stat
-          tiles under this header restated "N of M checked in" word for word —
-          two rows of chrome saying what the line above them already said, and
-          the arrivals list (the only thing on this page that changes) started
-          below the fold because of it. */}
+      {/* The subtitle says what the screen is; the tiles below say what the
+          numbers are. It used to carry "N of M checked in" itself, because the
+          tiles it shared the page with restated exactly that and nothing more.
+          The set below breaks the day down — attendees against volunteers, and a
+          rate — so the ratio now has one home instead of two. */}
       <DetailPageHeader
         title="Check-in"
         subtitle={
@@ -113,16 +138,70 @@ export default async function ClusterCheckinPage({
             {perEventDoors
               ? "Live status across the day\u2019s events"
               : "Live status for the day"}{" "}
-            — attendance is recorded on the kiosk below ·{" "}
-            <span className="font-medium text-foreground tabular-nums">
-              {checkedInCount} of {people.length}
-            </span>{" "}
-            checked in
+            — attendance is recorded on the kiosk below
           </p>
         }
       />
 
       <div className="flex flex-1 flex-col gap-6 p-6">
+        {/* The same tile set the session detail screen carries, in the same
+            two/three/five step: the workspace sidebar is still expanded at
+            tablet widths, so five tiles only lay out in a row once the viewport
+            can afford them. */}
+        {events.length > 0 && (
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-5">
+            <StatCard
+              label="Expected"
+              value={stats.expected}
+              icon={<Users className="size-4" />}
+            />
+            {/* The gender split describes the room, so it rides the arrivals
+                tile rather than the expected one — the same reading the session
+                screen's Total tile has, where every row is someone present. */}
+            <StatCard
+              label="Checked in"
+              value={stats.checkedInCount}
+              icon={<UserRoundCheck className="size-4" />}
+              genderBar={{ men: stats.menCount, women: stats.womenCount }}
+              caption={
+                // An empty day has nobody outstanding, which is not the same
+                // claim as everyone having arrived.
+                stats.expected === 0
+                  ? "Nobody on the day yet"
+                  : stats.notInCount === 0
+                    ? "Everyone is in"
+                    : `${stats.notInCount.toLocaleString()} not in yet`
+              }
+            />
+            <StatCard
+              label="Attendees"
+              value={stats.attendeesCheckedIn}
+              icon={<Users className="size-4" />}
+              caption={`of ${stats.attendeesExpected.toLocaleString()} expected`}
+            />
+            <StatCard
+              label="Volunteers"
+              value={stats.volunteersCheckedIn}
+              icon={<UserCheck className="size-4" />}
+              caption={`of ${stats.volunteersExpected.toLocaleString()} expected`}
+            />
+            {/* Arrivals over the day's people — volunteers counted in both
+                halves, since a cluster day's denominator is who it expects
+                rather than who holds a registration. The caption spells the
+                ratio out for the same reason every other turnout figure does. */}
+            <StatCard
+              label="Turnout"
+              value={formatTurnoutRate(stats.turnout.rate)}
+              icon={<Target className="size-4" />}
+              caption={
+                stats.expected === 0
+                  ? "Nobody on the day yet"
+                  : formatClusterCheckinRatio(stats)
+              }
+            />
+          </div>
+        )}
+
         <ClusterCheckinShortcuts
           shortcuts={shortcuts}
           canConfigure={writable}
@@ -156,7 +235,10 @@ export default async function ClusterCheckinPage({
         />
 
         <ClusterCheckinClient
+          clusterId={cluster.id}
+          canEdit={writable}
           people={people}
+          events={perEventDoors ? events.map((e) => ({ id: e.id, name: e.name })) : []}
           hasCheckinEvents={events.length > 0}
           // A Collab registrant holds exactly one of the day's events, so the
           // per-event badge column is the same word on every row — and the one

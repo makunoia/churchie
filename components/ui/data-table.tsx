@@ -68,8 +68,15 @@ interface DataTableProps<TData, TValue> {
    * families doesn't count "familys". Defaults to rows.
    */
   rowLabel?: { one: string; many: string }
-  /** Hide the pagination footer for short, fixed-length tables. */
+  /**
+   * Show the whole list at once: no pagination footer, and no page cap on the
+   * rows either. It is for short, fixed-length tables — a bus manifest, one
+   * session's breakout groups — where a footer would be chrome for a single
+   * page. Both halves matter: hiding only the footer left the row model still
+   * capped at `initialPageSize` with the remaining rows unreachable.
+   */
   hidePagination?: boolean
+  /** Rows per page. Ignored under `hidePagination`, which shows every row. */
   initialPageSize?: number
   /** Sub-rows, for tables that expand a row into detail. */
   getSubRows?: (row: TData) => TData[] | undefined
@@ -129,6 +136,14 @@ export function DataTable<TData, TValue>({
 
   const { preference, setPreference, resetPreference } = useTablePreference(tableKey ?? "")
 
+  // A table that hides its footer has to actually show every row: there is no
+  // control left to reach a second page with. One page big enough for the whole
+  // list is how that is said to TanStack — `pageSize` must stay ≥ 1, and the
+  // count is of top-level rows, which is what pagination measures.
+  const effectivePagination = hidePagination
+    ? { pageIndex: 0, pageSize: Math.max(data.length, 1) }
+    : pagination
+
   // What the picker needs to know, derived from each column's own `meta` so a
   // column is described in exactly one place.
   const specs = React.useMemo<TableColumnSpec[]>(
@@ -167,7 +182,7 @@ export function DataTable<TData, TValue>({
       columnFilters,
       columnVisibility: layout.visibility,
       columnOrder: layout.order,
-      pagination,
+      pagination: effectivePagination,
     },
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,

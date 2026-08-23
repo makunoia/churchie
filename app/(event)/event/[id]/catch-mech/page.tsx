@@ -154,12 +154,19 @@ async function getCatchMechData(eventId: string) {
   // cohort is breakout membership, so these people are invisible to every count
   // above — a household registration (which deliberately skips placement), an
   // event with auto-assign off, or a placement that hit capacity and failed.
-  // Same clause the Breakouts page counts with, so the two agree.
-  // Owner-scoped, not `{ eventId }`: on a Collab day "seated" means seated at one
-  // of the CLUSTER's tables, so an event-scoped owner would report every attendee
-  // as unseated.
+  // `seatedWhere`, not `where`: this asks whether the person is sitting anywhere
+  // at all, so it spans the event's own tables AND the whole of the day's —
+  // including tables endorsed to the OTHER ministry. Someone at a partner
+  // ministry's table is seated; the narrower `where` would call them unseated.
+  //
+  // It is the same clause as the Breakouts page's "N unassigned" off a collab
+  // day, and deliberately a wider one on one — the two figures answer different
+  // questions there. The Breakouts page counts who is missing from THIS EVENT's
+  // set, because its assign-all button fills exactly that set. This one counts
+  // who Catch Mech cannot reach at all, and a person at the day's table is
+  // reachable through it.
   const unseatedCount = await db.eventRegistrant.count({
-    where: { eventId, ...unassignedCandidateWhere(scope.owner) },
+    where: { eventId, ...unassignedCandidateWhere(scope.seatedWhere) },
   })
 
   return { groupRows, stats, weeklyBuckets, response, volunteerResponse, unseatedCount, scope }
@@ -418,7 +425,7 @@ export default async function CatchMechAdminPage({
         title="Catch Mech"
         description={
           scope.viaCluster
-            ? `Track DGroup confirmations from this ministry's tables at ${scope.clusterName ?? "the collab"}`
+            ? `Track DGroup confirmations from this event's own breakout groups and its tables at ${scope.clusterName ?? "the collab"}`
             : "Track DGroup confirmations from breakout groups"
         }
       />

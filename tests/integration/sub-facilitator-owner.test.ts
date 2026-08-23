@@ -284,7 +284,10 @@ describe("integration — a Collab day's cluster-owned table", () => {
     expect(result.success).toBe(true)
   })
 
-  it("refuses the member event's own standing table, which is out of play", async () => {
+  it("accepts the member event's own standing table too — both sets are in play", async () => {
+    // The occurrence belongs to the member event, and that event keeps its own
+    // tables inside a collab. A sitting can need a stand-in at either set, so a
+    // scope naming only the day's would leave the event's own unstaffable.
     const event = await seedEvent()
     await seedCollab([event.id])
     const occurrence = await seedOccurrence(event.id)
@@ -297,6 +300,34 @@ describe("integration — a Collab day's cluster-owned table", () => {
     const result = await assignSubFacilitator(
       occurrence.id,
       standing.id,
+      FacilitatorRole.Facilitator,
+      volunteer.id
+    )
+
+    expect(result.success).toBe(true)
+    expect(
+      await db.occurrenceSubFacilitator.count({
+        where: { occurrenceId: occurrence.id, breakoutGroupId: standing.id },
+      })
+    ).toBe(1)
+  })
+
+  it("still refuses a table belonging to neither set", async () => {
+    // The security property the previous case was standing in for: "in play"
+    // widened to two sets, it did not stop meaning anything.
+    const event = await seedEvent()
+    await seedCollab([event.id])
+    const occurrence = await seedOccurrence(event.id)
+    const stranger = await seedEvent()
+    const foreign = await db.breakoutGroup.create({
+      data: { name: "Another event's table", eventId: stranger.id },
+      select: { id: true },
+    })
+    const volunteer = await seedVolunteer(event.id)
+
+    const result = await assignSubFacilitator(
+      occurrence.id,
+      foreign.id,
       FacilitatorRole.Facilitator,
       volunteer.id
     )

@@ -42,6 +42,7 @@ import {
   buildNameMatcher,
   findEventRegistrantsForLookup,
   findEventVolunteersForLookup,
+  clearCheckinAttendance,
   matchesContactQuery,
   recordCheckinAttendance,
   registrantContact,
@@ -50,6 +51,8 @@ import {
 } from "@/lib/events/checkin-lookup"
 import { contactHintFrom } from "@/lib/contact-hint"
 import {
+  getAccessibleClusterEvents,
+  getClusterDayRows,
   getClusterEvents,
   resolveClusterCheckinTargets,
 } from "@/lib/clusters/aggregate"
@@ -57,6 +60,10 @@ import {
   planClusterCheckinToggle,
   type ClusterCheckinSkipCause,
 } from "@/lib/clusters/checkin-toggle"
+import {
+  planClusterCheckinRemoval,
+  type ClusterCheckinRemovalSkipCause,
+} from "@/lib/clusters/checkin-removal"
 import { setFormOpen } from "@/app/(dashboard)/forms/actions"
 import { setOccurrenceCheckinOpen } from "@/app/(dashboard)/events/actions"
 import {
@@ -620,6 +627,29 @@ export async function registerForCluster(
       ? resolveBreakoutSelection(formConfig, selectedBreakoutGroupId)
       : null
 
+    /**
+     * Whether to leave someone unseated for the day's kiosk to ask (CCF-148).
+     *
+     * A member event with `autoAssignBreakout` on placed every registrant at
+     * submit, and the kiosk skips anyone already seated — so a Collab day whose
+     * Check-in form asked about tables never got to ask anybody, and switching the
+     * section on looked like it did nothing. Auto-assign has always *replaced* a
+     * picker rather than sat beside it; this is that same rule, now that the
+     * picker can be one surface further along.
+     *
+     * Only automatic placement waits. A table chosen on this submission is a
+     * decision already taken and still lands, which is also why the kiosk goes on
+     * skipping people who arrive seated — it re-asks nobody who chose.
+     *
+     * Never at the **door**: a walk-in is checked in on the spot and never reaches
+     * the kiosk, so deferring there would strand them unseated with nobody left to
+     * ask. The door has its own picker for exactly this reason.
+     */
+    const deferBreakoutToCheckin =
+      isCollab &&
+      !walkIn &&
+      (await getClusterFormConfig(cluster.id, "CheckIn")).sectionBreakout
+
     // Going over a group's member limit is a staff decision taken at the door
     // (CCF-141), and `walkIn` alone can't authorise it: the cluster walk-in route
     // is public, so that flag is self-asserted by the request. Same pairing as
@@ -773,7 +803,11 @@ export async function registerForCluster(
                 eventId,
                 breakoutPick,
                 profile,
-                allowOverCapacity
+                allowOverCapacity,
+                null,
+                false,
+                // Same set the main branch fills — this is the same shared form.
+                "cluster"
               )
             : null
           results.push({
@@ -813,6 +847,12 @@ export async function registerForCluster(
           walkIn: walkInForEvent,
           existingRegistrantId: existing?.id ?? null,
           touchedFields: touched,
+          skipAutoAssign: deferBreakoutToCheckin,
+          // The day's own tables. A member event keeps its standing set and fills
+          // it from its own forms; the shared form fills the day's. On a Parallel
+          // day there is no cluster set and this resolves back to the event's,
+          // which is the only one it has.
+          breakoutSet: "cluster",
         })
         results.push({
           eventId,
@@ -904,6 +944,7 @@ export async function carryOverBreakoutGroups(
         locationCity: true,
         memberLimit: true,
         isEnabled: true,
+        manualAssignOnly: true,
         linkedSmallGroupId: true,
         lifeStages: { select: { id: true } },
         schedules: { select: { dayOfWeek: true, timeStart: true, timeEnd: true } },
@@ -975,6 +1016,7 @@ export async function carryOverBreakoutGroups(
           locationCity: src.locationCity,
           memberLimit: src.memberLimit,
           isEnabled: src.isEnabled,
+          manualAssignOnly: src.manualAssignOnly,
           linkedSmallGroupId: src.linkedSmallGroupId,
           lifeStages: { connect: src.lifeStages.map((l) => ({ id: l.id })) },
           schedules: {
@@ -1142,6 +1184,110 @@ export async function setClusterCheckinOpen(
     return { success: true, data: { results } }
   } catch {
     return { success: false, error: "Failed to update check-in for the day." }
+  }
+}
+
+export type ClusterCheckinRemovalOutcome = {
+  /** The events an arrival was actually undone on. */
+  removed: { eventId: string; eventName: string }[]
+  skipped: {
+    eventId: string
+    eventName: string
+    reason: ClusterCheckinRemovalSkipCause
+  }[]
+}
+
+/**
+ * Undo a person's arrival across the day — the admin board's answer to the
+ * session screen's "Remove from session".
+ *
+ * The inverse of `checkInToCluster`, and it takes the same shape of argument for
+ * the same reason: a **person key**, never a registrant or volunteer id. Every
+ * row is re-resolved from the cluster's own events, so a forged or stale key
+ * simply finds nobody, and a Staff user with partial event access can only clear
+ * the events they can already see (`getAccessibleClusterEvents`, the board's own
+ * read).
+ *
+ * Person-level rather than per-event because that is the grain of both the board
+ * and the kiosk that created the record: one row is one person, and one tap
+ * checked them into every event of the day that would take it. On a **Parallel**
+ * day that can mean several arrivals behind one click, which is why the outcome
+ * names each one back — the confirm dialog says what it is about to clear, and
+ * the toast says what it did.
+ *
+ * Attendance only. The registration or volunteer row itself is untouched: the
+ * person is still expected on the day, they are simply no longer marked as
+ * having arrived.
+ */
+export async function removeClusterCheckin(
+  clusterId: string,
+  personKey: string
+): Promise<ActionResult<ClusterCheckinRemovalOutcome>> {
+  const authError = await requireClusterWrite(clusterId)
+  if (authError) return { success: false, error: authError.error }
+
+  if (!personKey.trim()) return { success: false, error: "No one selected." }
+
+  try {
+    const session = await auth()
+    const cluster = await db.eventCluster.findUnique({
+      where: { id: clusterId },
+      select: { id: true, publicToken: true, date: true, kind: true },
+    })
+    if (!cluster) return { success: false, error: "Event cluster not found." }
+
+    // The same slice of the day the board monitors — a MultiDay event, or a
+    // Recurring one whose link names no session, tracks its arrivals on its own
+    // sessions page and is not this screen's to undo.
+    const events = (await getAccessibleClusterEvents(session, clusterId)).filter(
+      (e) => e.type === "OneTime" || (e.type === "Recurring" && e.linkedOccurrenceId)
+    )
+    if (events.length === 0) {
+      return { success: false, error: "This day has no events to undo." }
+    }
+
+    const rows = await getClusterDayRows(events, {
+      clusterId: cluster.id,
+      date: cluster.date,
+      kind: cluster.kind,
+    })
+    // `onClusterDay` matches the board exactly: a standing series row with no
+    // evidence for today is not on this screen, so it is not this screen's to
+    // clear either.
+    const mine = rows.filter((r) => r.onClusterDay && personKeyFor(r) === personKey)
+    if (mine.length === 0) {
+      return { success: false, error: "We couldn't find that person on this day." }
+    }
+
+    const targets = await resolveClusterCheckinTargets(events, cluster.date)
+    const ops = planClusterCheckinRemoval(targets, mine)
+
+    const removed: ClusterCheckinRemovalOutcome["removed"] = []
+    const skipped: ClusterCheckinRemovalOutcome["skipped"] = []
+
+    for (const op of ops) {
+      const base = { eventId: op.eventId, eventName: op.eventName }
+      if (op.kind === "skip") {
+        skipped.push({ ...base, reason: op.reason })
+        continue
+      }
+      await clearCheckinAttendance(
+        op.subject,
+        op.kind === "occurrence" ? op.occurrenceId : null
+      )
+      if (!removed.some((r) => r.eventId === op.eventId)) removed.push(base)
+      revalidatePath(`/event/${op.eventId}/checkin`)
+      revalidatePath(`/event/${op.eventId}/dashboard`)
+      if (op.kind === "occurrence") {
+        revalidatePath(`/event/${op.eventId}/sessions`)
+        revalidatePath(`/event/${op.eventId}/sessions/${op.occurrenceId}`)
+      }
+    }
+
+    revalidateClusterPaths(clusterId, cluster.publicToken)
+    return { success: true, data: { removed, skipped } }
+  } catch {
+    return { success: false, error: "Failed to undo the check-in." }
   }
 }
 
@@ -1460,13 +1606,24 @@ export async function checkInToCluster(
 
     revalidateClusterPaths(ctx.cluster.id)
 
-    // Only over the cells we actually recorded: a registration on an event the
+    // Only over cells whose attendance now stands: a registration on an event the
     // day skipped isn't present, so seating them at the day's table would place
     // someone the room has no record of.
+    //
+    // "Now stands" rather than "was written by this tap". A cell skipped as
+    // `already` is attendance too — the person is in the room, they simply got
+    // there a moment earlier, whether by a double tap or by a staffer working the
+    // admin board. Reading only `recorded` meant the step had exactly one chance
+    // to appear and no retry: anyone already checked in went straight to the
+    // welcome screen, which is also what made "undo the arrival, then check in
+    // again" the only way to see it. Every other skip reason is a real absence
+    // and stays out. `pickCheckinBreakout` re-checks the attendance itself, so
+    // this widening cannot seat anyone the room hasn't recorded.
     const seatable = person.events.find(
       (cell) =>
         cell.subject?.kind === "registrant" &&
-        recorded.some((r) => r.eventId === cell.eventId)
+        (recorded.some((r) => r.eventId === cell.eventId) ||
+          skipReasonFor(cell) === "already")
     )
 
     // Re-read so the caller's screen shows what is now true, not what was true

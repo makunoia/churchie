@@ -271,12 +271,13 @@ describe("getCheckinBreakoutChoices — who gets offered the step", () => {
     expect(result).toEqual({ success: true, data: null })
   })
 
-  it("explains an empty list when the team hasn't arrived yet", async () => {
+  it("suggests a table whose facilitator hasn't arrived yet", async () => {
     const { event, committee, role } = await seedEvent()
     const member = await db.member.create({
       data: { firstName: "Ana", lastName: "Faci", dateJoined: new Date(), language: [] },
     })
-    // Assigned but NOT checked in — the gate holds the table back.
+    // Assigned but NOT checked in. The door would hold this table back; the kiosk
+    // does not.
     const volunteer = await db.volunteer.create({
       data: {
         memberId: member.id,
@@ -286,18 +287,19 @@ describe("getCheckinBreakoutChoices — who gets offered the step", () => {
         status: "Confirmed",
       },
     })
-    await db.breakoutGroup.create({
+    const group = await db.breakoutGroup.create({
       data: { name: "Table 1", eventId: event.id, facilitatorId: volunteer.id },
     })
     const { registrant } = await seedCheckedInGuest(event.id, "Nora")
 
     const result = await getCheckinBreakoutChoices(registrant.id, event.id, null)
-    if (!result.success || !result.data) throw new Error("expected a notice")
-    // Saying so beats dropping the step, which is what made an enabled Breakout
-    // toggle look like it did nothing on the walk-in form.
-    expect(result.data.notice).toBe("awaiting-facilitator")
-    expect(result.data.options).toHaveLength(0)
-    expect(result.data.hasCandidates).toBe(false)
+    if (!result.success || !result.data) throw new Error("expected choices")
+    // The first arrivals of the morning come before the team does. Gating them
+    // meant the suggestion — the entire reason the step exists — never appeared.
+    expect(result.data.suggested?.id).toBe(group.id)
+    expect(result.data.options.map((o) => o.id)).toEqual([group.id])
+    expect(result.data.hasCandidates).toBe(true)
+    expect(result.data.notice).toBeNull()
   })
 
   it("refuses a registrant that belongs to a different event", async () => {
@@ -541,10 +543,12 @@ describe("on a Collab day the tables belong to the cluster", () => {
     return { cluster, event, volunteer }
   }
 
-  it("offers the day's tables, not the member event's standing ones", async () => {
+  it("offers whichever set the kiosk asking is filling", async () => {
+    // Two sets exist and the surface decides. The member event's own kiosk fills
+    // the event's standing tables; the day's kiosk passes "cluster" and fills the
+    // day's. The event id alone cannot answer it — both are valid for this person.
     const { cluster, event, volunteer } = await seedCollab()
-    // The member event's own standing table — untouched and unused for the day.
-    await db.breakoutGroup.create({
+    const standing = await db.breakoutGroup.create({
       data: { name: "Standing Table", eventId: event.id, facilitatorId: volunteer.id },
     })
     const dayTable = await db.breakoutGroup.create({
@@ -552,9 +556,13 @@ describe("on a Collab day the tables belong to the cluster", () => {
     })
     const { registrant } = await seedCheckedInGuest(event.id, "Nora")
 
-    const result = await getCheckinBreakoutChoices(registrant.id, event.id, null)
-    if (!result.success || !result.data) throw new Error("expected choices")
-    expect(result.data.options.map((o) => o.id)).toEqual([dayTable.id])
+    const atEvent = await getCheckinBreakoutChoices(registrant.id, event.id, null)
+    if (!atEvent.success || !atEvent.data) throw new Error("expected choices")
+    expect(atEvent.data.options.map((o) => o.id)).toEqual([standing.id])
+
+    const atDay = await getCheckinBreakoutChoices(registrant.id, event.id, null, "cluster")
+    if (!atDay.success || !atDay.data) throw new Error("expected choices")
+    expect(atDay.data.options.map((o) => o.id)).toEqual([dayTable.id])
   })
 
   it("seats them at the day's table through their own member event", async () => {
@@ -564,13 +572,63 @@ describe("on a Collab day the tables belong to the cluster", () => {
     })
     const { registrant } = await seedCheckedInGuest(event.id, "Nora")
 
-    const result = await pickCheckinBreakout(registrant.id, event.id, null, dayTable.id)
+    const result = await pickCheckinBreakout(
+      registrant.id,
+      event.id,
+      null,
+      dayTable.id,
+      "cluster"
+    )
     expect(result).toEqual({ success: true, data: { name: "Day Table" } })
 
     const seat = await db.breakoutGroupMember.findFirst({
       where: { registrantId: registrant.id },
     })
     expect(seat?.breakoutGroupId).toBe(dayTable.id)
+  })
+
+  it("still offers the step to someone holding a standing seat at their own event's table", async () => {
+    // A standing seat is not an answer about today. `EventRegistrant` is one row
+    // per person per SERIES and `BreakoutGroupMember` has no per-occurrence
+    // scoping, so a recurring event's regular holds this seat permanently — a
+    // guard spanning both sets found it, called them placed and skipped the day's
+    // step for every regular of either ministry. See `surfaceBreakoutSet`.
+    const { cluster, event, volunteer } = await seedCollab()
+    const standing = await db.breakoutGroup.create({
+      data: { name: "Standing Table", eventId: event.id, facilitatorId: volunteer.id },
+      select: { id: true, name: true },
+    })
+    await db.breakoutGroup.create({
+      data: { name: "Day Table", clusterId: cluster.id, facilitatorId: volunteer.id },
+    })
+    const { registrant } = await seedCheckedInGuest(event.id, "Nora")
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: standing.id, registrantId: registrant.id },
+    })
+
+    const atDay = await getCheckinBreakoutChoices(registrant.id, event.id, null, "cluster")
+    if (!atDay.success || !atDay.data) throw new Error("expected choices")
+    expect(atDay.data.seatedGroupName).toBeNull()
+    expect(atDay.data.options.map((o) => o.name)).toEqual(["Day Table"])
+  })
+
+  it("does not re-ask someone the day has already seated", async () => {
+    // The other half of the same rule: a seat made for TODAY answers on every
+    // surface. This is what stops the day's kiosk asking twice.
+    const { cluster, event, volunteer } = await seedCollab()
+    const dayTable = await db.breakoutGroup.create({
+      data: { name: "Day Table", clusterId: cluster.id, facilitatorId: volunteer.id },
+      select: { id: true },
+    })
+    const { registrant } = await seedCheckedInGuest(event.id, "Nora")
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: dayTable.id, registrantId: registrant.id },
+    })
+
+    const atDay = await getCheckinBreakoutChoices(registrant.id, event.id, null, "cluster")
+    if (!atDay.success || !atDay.data) throw new Error("expected choices")
+    expect(atDay.data.seatedGroupName).toBe("Day Table")
+    expect(atDay.data.options).toEqual([])
   })
 
   it("still refuses a table from another day", async () => {

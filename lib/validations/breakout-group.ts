@@ -6,6 +6,18 @@ export const breakoutGroupSchema = z
     facilitatorId: z.string().nullable().optional(),
     coFacilitatorId: z.string().nullable().optional(),
     memberLimit: z.coerce.number().int().positive("Must be a positive number").nullable().optional(),
+    /**
+     * Not matching — hold this group back from suggestions and auto-assign while
+     * leaving every dropdown and admin screen free to pick it. Sits above the
+     * matching block on purpose: it decides which *routes* reach the group, not
+     * which people fit it.
+     *
+     * `.optional()` rather than `.default(false)`, which would make it required
+     * on `BreakoutGroupFormValues` and read an absent key as "switch it off".
+     * Absent means "not on this form" — the same rule `coFacilitatorId` follows,
+     * and `updateBreakoutGroup` resolves it against the stored value the same way.
+     */
+    manualAssignOnly: z.boolean().optional(),
     // Matching profile — the four factors a breakout group matches on. Meeting
     // format, location city and meeting schedule are deliberately gone: a
     // breakout table meets once, during the event, at the venue. Their columns
