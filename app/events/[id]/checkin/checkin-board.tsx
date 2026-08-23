@@ -2,7 +2,9 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { IconCheck, IconLoader2, IconUserQuestion, IconArrowLeft } from "@tabler/icons-react"
+import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -143,6 +145,18 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
     [config]
   )
   const [step, setStep] = React.useState<Step>("lookup")
+  const router = useRouter()
+
+  /**
+   * The kiosk sitting on its search box between arrivals.
+   *
+   * The per-person data here is already fresh — every tap calls a server action.
+   * What is frozen is the CONFIG this board was rendered with (`config`,
+   * `autoAssignBreakout`, `walkInOpen`), so an admin switching the Breakout step
+   * on mid-event, or opening the door, changed nothing the tablet could see.
+   * See `useKioskRefresh`.
+   */
+  useKioskRefresh(step === "lookup")
   const [query, setQuery] = React.useState("")
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -173,6 +187,9 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
   }
 
   function reset() {
+    // Re-read the config this board was rendered with, for the next arrival —
+    // the same half of the reset the walk-in door's own form does.
+    router.refresh()
     if (nameDebounceTimer.current) clearTimeout(nameDebounceTimer.current)
     setStep("lookup")
     setQuery("")

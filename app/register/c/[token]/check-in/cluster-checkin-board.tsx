@@ -2,7 +2,9 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { IconCheck, IconLoader2, IconUserQuestion } from "@tabler/icons-react"
+import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -87,6 +89,10 @@ export function ClusterCheckinBoard({
   /** A collab never names the day's events; a parallel day always does. */
   const showEvents = kind !== "Collab"
   const [step, setStep] = React.useState<Step>("lookup")
+  const router = useRouter()
+
+  /** The day's kiosk waiting for the next arrival — see `useKioskRefresh`. */
+  useKioskRefresh(step === "lookup")
   const [query, setQuery] = React.useState("")
   const [nameQuery, setNameQuery] = React.useState("")
   const [nameResults, setNameResults] = React.useState<ClusterCheckinPerson[]>([])
@@ -106,6 +112,9 @@ export function ClusterCheckinBoard({
   const nameDebounceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const reset = React.useCallback(() => {
+    // Re-read the day's config for the next arrival. Same reasoning as the
+    // per-event board — see `useKioskRefresh`.
+    router.refresh()
     if (nameDebounceTimer.current) clearTimeout(nameDebounceTimer.current)
     setStep("lookup")
     setQuery("")
@@ -121,7 +130,7 @@ export function ClusterCheckinBoard({
     setLoading(false)
     setError(null)
     setTimeout(() => inputRef.current?.focus(), 50)
-  }, [])
+  }, [router])
 
   React.useEffect(() => {
     inputRef.current?.focus()
