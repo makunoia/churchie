@@ -8,6 +8,7 @@ import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
 import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
+import { OfflineNotice } from "@/components/offline-notice"
 import {
   BARE_EVENT_FORM_CONFIG,
   formLayoutFor,
@@ -320,15 +321,36 @@ type Props = {
 
 // Card wrapper that can render chrome-less for embedding. Defined at module
 // level so its identity is stable across renders (inputs keep focus).
+/**
+ * The wrapper every step of this form returns through — which is why the offline
+ * notice lives here rather than at a dozen call sites. A connection that drops
+ * mid-form matters as much as one that is already down when the door opens, and
+ * the shell is the one place that sees both.
+ */
 function FormShell({
   plain,
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof Card> & { plain?: boolean }) {
+  const body = (
+    <>
+      <OfflineNotice />
+      {children}
+    </>
+  )
   if (plain) {
-    return <div className={cn("flex flex-col gap-6 py-6", className)} {...props} />
+    return (
+      <div className={cn("flex flex-col gap-6 py-6", className)} {...props}>
+        {body}
+      </div>
+    )
   }
-  return <Card className={className} {...props} />
+  return (
+    <Card className={className} {...props}>
+      {body}
+    </Card>
+  )
 }
 
 /**

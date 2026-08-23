@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { IconCheck, IconLoader2, IconUserQuestion, IconArrowLeft } from "@tabler/icons-react"
 import { useKioskRefresh } from "@/lib/hooks/use-kiosk-refresh"
+import { OfflineNotice } from "@/components/offline-notice"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -520,6 +521,9 @@ export function CheckinBoard({ eventId, occurrenceId, lifeStages = [], ageRanges
     return (
       <div className="flex flex-col items-center justify-center px-6 py-8">
         <div className="w-full space-y-6">
+          {/* The resting screen is where "is this thing working?" gets asked, and
+              where a cached page looks most convincingly live. */}
+          <OfflineNotice />
           {/* Name search */}
           <div className="space-y-3">
             <div className="space-y-2">

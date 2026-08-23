@@ -5,7 +5,9 @@ import type { Session } from "next-auth"
 import { db } from "@/lib/db"
 import { canAccessEvent } from "@/lib/permissions"
 import { ClusterKind } from "@/app/generated/prisma/client"
+import { anyOwner, isClusterOwner } from "@/lib/breakouts/owner"
 import type { BreakoutOwner, BreakoutSet } from "@/lib/breakouts/owner"
+import type { Prisma } from "@/app/generated/prisma/client"
 
 /**
  * Pool scope (CCF-148) — how wide the volunteer roster and the breakout tables
@@ -270,4 +272,40 @@ export async function resolveSurfaceBreakoutOwner(
   const scope = await resolvePoolScope(eventId)
   if (set === "cluster" && scope.clusterBreakoutOwner) return scope.clusterBreakoutOwner
   return scope.breakoutOwner
+}
+
+/**
+ * The seats that count as "already placed" when filling this owner's set.
+ *
+ * **A seat counts if it is in the set being filled, or if it was made for today.**
+ * On a Collab day the cluster's set is today's; a member event's standing tables
+ * are dormant, not being run. The two directions are therefore different
+ * questions, and this is deliberately asymmetric:
+ *
+ *  - A **cluster** owner: only the day's seats. A standing seat is not an answer
+ *    about today, and treating it as one leaves the day's regulars unplaced —
+ *    `EventRegistrant` is one row per person per *series* and
+ *    `BreakoutGroupMember` has no per-occurrence scoping, so a recurring event's
+ *    regular holds a standing seat permanently.
+ *  - An **event** owner on a Collab day: both. Today's placement stands, and
+ *    there is nothing to gain by also seating someone at a table that isn't
+ *    running.
+ *
+ * Off a collab day both collapse to the owner itself, so a rewritten query
+ * behaves exactly as a bare `{ ...owner }` always did.
+ *
+ * This is for the **automatic** routes — the ones where nobody chose. The admin
+ * add and transfer screens deliberately keep asking the narrower per-owner
+ * question, because they are the manual escape hatch and holding a seat in each
+ * set is an ordinary state rather than a fault.
+ *
+ * Combine with `AND`, never a spread: it carries an `OR` whenever both sets are
+ * in play.
+ */
+export async function resolveSeatedScope(
+  owner: BreakoutOwner
+): Promise<Prisma.BreakoutGroupWhereInput> {
+  if (isClusterOwner(owner)) return { ...owner }
+  const { clusterBreakoutOwner } = await resolvePoolScope(owner.eventId)
+  return clusterBreakoutOwner ? anyOwner([owner, clusterBreakoutOwner]) : { ...owner }
 }

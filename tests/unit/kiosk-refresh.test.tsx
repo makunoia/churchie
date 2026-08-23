@@ -38,10 +38,19 @@ function setVisibility(state: "visible" | "hidden") {
   })
 }
 
+/** Same for `navigator.onLine`, which jsdom hard-codes to true. */
+function setOnline(online: boolean) {
+  Object.defineProperty(navigator, "onLine", {
+    configurable: true,
+    get: () => online,
+  })
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   refresh.mockClear()
   setVisibility("visible")
+  setOnline(true)
 })
 
 afterEach(() => {
@@ -116,6 +125,32 @@ describe("a backgrounded tab", () => {
   })
 })
 
+describe("a kiosk with no network", () => {
+  it("is not polled", () => {
+    // The request cannot leave, and firing it every minute only fills the
+    // console with failures a staffer can do nothing about.
+    setOnline(false)
+    render(<Kiosk idle />)
+
+    vi.advanceTimersByTime(5000)
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it("catches up the instant the connection returns", () => {
+    // The valuable half. Venue wifi dropping is the ordinary case; without this
+    // edge the door shows whatever it held at the moment of the drop until the
+    // next interval happens to land.
+    setOnline(false)
+    render(<Kiosk idle />)
+    vi.advanceTimersByTime(5000)
+    expect(refresh).not.toHaveBeenCalled()
+
+    setOnline(true)
+    window.dispatchEvent(new Event("online"))
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+})
+
 // ─── The wiring ──────────────────────────────────────────────────────────────
 
 /**
@@ -138,17 +173,22 @@ describe("the surfaces that use it", () => {
     // While waiting: the identify gate only — never `"form"`, which is a step
     // someone may be part-way through answering.
     expect(form).toContain('useKioskRefresh(!!walkIn && step === "identify")')
+    // Every step returns through `FormShell`, so one mount covers a connection
+    // that drops mid-form as well as one that was down when the door opened.
+    expect(form).toMatch(/function FormShell\([\s\S]{0,600}?<OfflineNotice \/>/)
   })
 
   it("refreshes the event check-in kiosk", () => {
     const board = read("app/events/[id]/checkin/checkin-board.tsx")
     expect(board).toMatch(/function reset\(\)[\s\S]{0,400}?router\.refresh\(\)/)
     expect(board).toContain('useKioskRefresh(step === "lookup")')
+    expect(board).toContain("<OfflineNotice />")
   })
 
   it("refreshes the collab day's check-in kiosk", () => {
     const board = read("app/register/c/[token]/check-in/cluster-checkin-board.tsx")
     expect(board).toMatch(/const reset = React\.useCallback\([\s\S]{0,400}?router\.refresh\(\)/)
     expect(board).toContain('useKioskRefresh(step === "lookup")')
+    expect(board).toContain("<OfflineNotice />")
   })
 })

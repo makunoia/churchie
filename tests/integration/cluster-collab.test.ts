@@ -1,8 +1,12 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { revalidatePath } from "next/cache"
 
 import { db } from "@/lib/db"
 import {
   addRegistrantsToBreakout,
+  autoAssignBreakouts,
+  createBreakoutGroup,
+  deleteBreakoutGroup,
   autoAssignRegistrantToBreakout,
   getRegistrantBreakoutGroupName,
   setFacilitator,
@@ -413,6 +417,63 @@ describe("one seat per person across the day", () => {
     await autoAssignRegistrantToBreakout(reg.id, youthId)
 
     expect(await db.breakoutGroupMember.count()).toBe(1)
+  })
+
+  it("won't sweep the day's seated people into the event's tables in bulk", async () => {
+    // The same rule at the bulk end, and the sharper failure of the two.
+    // `autoAssignBreakouts` read "unassigned" and "already seated" through the
+    // bare owner, so on a collab day EVERY person the day had seated came back as
+    // unassigned and was seated a second time in the event's dormant standing
+    // tables — in one click, for the whole roster. See `resolveSeatedScope`.
+    const { clusterId, youthId } = await seedDay("Collab")
+    const dayTable = await db.breakoutGroup.create({
+      data: { clusterId, name: "Collab Table 1" },
+      select: { id: true },
+    })
+    await db.breakoutGroup.create({
+      data: { eventId: youthId, name: "Youth Cell A" },
+      select: { id: true },
+    })
+
+    const maria = await seedMember("Maria")
+    const reg = await seedRegistrant(youthId, maria.id)
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: dayTable.id, registrantId: reg.id },
+    })
+
+    const result = await autoAssignBreakouts({ eventId: youthId })
+
+    expect(result.success).toBe(true)
+    if (!result.success) return
+    expect(result.data.assigned).toBe(0)
+    // Still exactly the one seat the day gave them.
+    const seats = await db.breakoutGroupMember.findMany({
+      select: { breakoutGroupId: true },
+    })
+    expect(seats.map((s) => s.breakoutGroupId)).toEqual([dayTable.id])
+  })
+
+  it("still fills the event's own tables for someone the day has NOT seated", async () => {
+    // The scope must narrow who counts as placed, not switch auto-assign off.
+    const { youthId } = await seedDay("Collab")
+    const standing = await db.breakoutGroup.create({
+      data: { eventId: youthId, name: "Youth Cell A" },
+      select: { id: true },
+    })
+
+    const maria = await seedMember("Maria")
+    const reg = await seedRegistrant(youthId, maria.id)
+
+    const result = await autoAssignBreakouts({ eventId: youthId })
+
+    expect(result.success).toBe(true)
+    if (!result.success) return
+    expect(result.data.assigned).toBe(1)
+    const seat = await db.breakoutGroupMember.findFirstOrThrow({
+      where: { registrantId: reg.id },
+      select: { breakoutGroupId: true },
+    })
+    expect(seat.breakoutGroupId).toBe(standing.id)
   })
 })
 
@@ -1114,5 +1175,84 @@ describe("adding an event to a Collab day", () => {
     const orphan = await candidate("Mystery Event")
     const result = await addEventToCluster(cluster.id, orphan.id)
     expect(result.success).toBe(true)
+  })
+})
+
+// ─── The day's public surfaces are revalidated too ───────────────────────────
+
+describe("revalidating a cluster-owned table's public surfaces", () => {
+  /**
+   * The cluster branch of `revalidateBreakoutSurfaces` used to stop at the
+   * workspace, so a table added to the day never invalidated the shared form,
+   * the door or the kiosk — while the event branch had always invalidated its
+   * own. Nothing about a collab day makes its public pickers less public.
+   *
+   * By ROUTE rather than by path, because a cluster's public surfaces are keyed
+   * by `publicToken` and the function is handed an owner carrying the cluster's
+   * *id*.
+   */
+  const PUBLIC_ROUTES = [
+    "/register/c/[token]",
+    "/register/c/[token]/walk-in",
+    "/register/c/[token]/check-in",
+  ]
+
+  function revalidatedPaths() {
+    return vi.mocked(revalidatePath).mock.calls.map((c) => c[0])
+  }
+
+  it("revalidates them when a table is added to the day", async () => {
+    const { clusterId } = await seedDay("Collab")
+    vi.mocked(revalidatePath).mockClear()
+
+    const result = await createBreakoutGroup(
+      { clusterId },
+      { name: "Collab Table 1", lifeStageIds: [], language: [] }
+    )
+
+    expect(result.success).toBe(true)
+    for (const route of PUBLIC_ROUTES) expect(revalidatedPaths()).toContain(route)
+  })
+
+  it("revalidates them when a table is removed from the day", async () => {
+    const { clusterId } = await seedDay("Collab")
+    const group = await db.breakoutGroup.create({
+      data: { clusterId, name: "Collab Table 1" },
+      select: { id: true },
+    })
+    vi.mocked(revalidatePath).mockClear()
+
+    const result = await deleteBreakoutGroup(group.id, { clusterId })
+
+    expect(result.success).toBe(true)
+    for (const route of PUBLIC_ROUTES) expect(revalidatedPaths()).toContain(route)
+  })
+
+  it("still revalidates the day's own workspace", async () => {
+    // The public routes are an addition, not a replacement.
+    const { clusterId } = await seedDay("Collab")
+    vi.mocked(revalidatePath).mockClear()
+
+    await createBreakoutGroup(
+      { clusterId },
+      { name: "Collab Table 1", lifeStageIds: [], language: [] }
+    )
+
+    expect(revalidatedPaths()).toContain(`/cluster/${clusterId}/breakouts`)
+  })
+
+  it("never sends an event's table to the cluster's public routes", async () => {
+    // The reason the helper is centralised: an event-owned group must not
+    // invalidate a day it has nothing to do with.
+    const { youthId } = await seedDay("Collab")
+    vi.mocked(revalidatePath).mockClear()
+
+    await createBreakoutGroup(
+      { eventId: youthId },
+      { name: "Youth Cell A", lifeStageIds: [], language: [] }
+    )
+
+    for (const route of PUBLIC_ROUTES) expect(revalidatedPaths()).not.toContain(route)
+    expect(revalidatedPaths()).toContain(`/events/${youthId}/walk-in`)
   })
 })

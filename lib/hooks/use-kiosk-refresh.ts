@@ -39,9 +39,16 @@ import { useRouter } from "next/navigation"
  * opened at 8am whose first walk-in arrives at 9, long after the facilitators
  * checked in.
  *
- * Visibility is honoured on both edges — no polling against a backgrounded tab,
- * and an immediate catch-up when it comes back, which is the other shape of the
- * same gap (a staffer switching away to the admin board and back).
+ * Visibility and connectivity are both honoured on their two edges — never work
+ * that cannot succeed, and catch up the instant it can:
+ *
+ *  - **Hidden tab**: not polled, and refreshed the moment it is foregrounded.
+ *    That is the other shape of the same gap — a staffer switching to the admin
+ *    board to add a table, then switching back to the screen they just changed.
+ *  - **Offline**: not polled, and refreshed the moment the network returns. A
+ *    venue's wifi dropping is the ordinary case this exists for; without the
+ *    `online` edge the door would show whatever it had at the moment of the drop
+ *    until the next interval happened to land.
  */
 export function useKioskRefresh(idle: boolean, intervalMs = 60_000) {
   const router = useRouter()
@@ -49,19 +56,24 @@ export function useKioskRefresh(idle: boolean, intervalMs = 60_000) {
   React.useEffect(() => {
     if (!idle) return
 
-    function refreshIfVisible() {
+    function refreshIfReachable() {
       // `router.refresh()` on a hidden tab would queue work the browser then
       // throttles anyway, and would land the moment it is foregrounded — which
       // is exactly what the visibility listener below does deliberately.
       if (document.visibilityState !== "visible") return
+      // Only the negative is trustworthy here (see `useIsOffline`), which is all
+      // this needs: skip the request the browser already knows cannot leave.
+      if (!navigator.onLine) return
       router.refresh()
     }
 
-    const timer = window.setInterval(refreshIfVisible, intervalMs)
-    document.addEventListener("visibilitychange", refreshIfVisible)
+    const timer = window.setInterval(refreshIfReachable, intervalMs)
+    document.addEventListener("visibilitychange", refreshIfReachable)
+    window.addEventListener("online", refreshIfReachable)
     return () => {
       window.clearInterval(timer)
-      document.removeEventListener("visibilitychange", refreshIfVisible)
+      document.removeEventListener("visibilitychange", refreshIfReachable)
+      window.removeEventListener("online", refreshIfReachable)
     }
   }, [idle, intervalMs, router])
 }

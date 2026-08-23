@@ -9,12 +9,16 @@ import type { BreakoutGroupFormValues } from "@/lib/validations/breakout-group"
 import { matchBreakoutGroups } from "@/lib/matching"
 import type { Prisma } from "@/app/generated/prisma/client"
 import { unassignedCandidateWhere } from "@/lib/breakouts/candidate-pool"
-import { anyOwner, isClusterOwner, type BreakoutOwner, type BreakoutSet } from "@/lib/breakouts/owner"
+import { isClusterOwner, type BreakoutOwner, type BreakoutSet } from "@/lib/breakouts/owner"
 import {
   breakoutCandidateEventIds,
   breakoutCandidateWhere,
 } from "@/lib/breakouts/candidate-events"
-import { resolvePoolScope, resolveSurfaceBreakoutOwner } from "@/lib/events/pool-scope"
+import {
+  resolvePoolScope,
+  resolveSeatedScope,
+  resolveSurfaceBreakoutOwner,
+} from "@/lib/events/pool-scope"
 import { isEventStaffViewer } from "@/lib/events/staff-viewer"
 import { assignBreakoutForRegistrant } from "@/lib/events/registration-core"
 import { fetchBreakoutAvailability } from "@/lib/breakout-suggestion-server"
@@ -68,9 +72,14 @@ async function poolVolunteerEventIds(owner: BreakoutOwner): Promise<string[]> {
 /**
  * Revalidate the surfaces a breakout change is visible on.
  *
- * The two owners live at different paths, and the event owner additionally
- * touches the public pickers. Centralised so a new action can't revalidate the
- * event paths for a cluster-owned group and silently show stale tables.
+ * The two owners live at different paths, and both reach public pickers.
+ * Centralised so a new action can't revalidate the event paths for a
+ * cluster-owned group and silently show stale tables.
+ *
+ * Note what this cannot do. `revalidatePath` clears a server cache; a kiosk
+ * showing the old tables is a React tree already mounted in a browser across the
+ * room, which no server-side call can reach. `useKioskRefresh` is what keeps
+ * those current — this only ensures the next *render* is fresh.
  */
 function revalidateBreakoutSurfaces(
   owner: BreakoutOwner,
@@ -82,6 +91,22 @@ function revalidateBreakoutSurfaces(
     if (opts?.groupId) revalidatePath(`/cluster/${clusterId}/breakouts/${opts.groupId}`)
     revalidatePath(`/cluster/${clusterId}/dashboard`)
     revalidatePath(`/cluster/${clusterId}/registrants`)
+    if (opts?.publicPickers) {
+      // By ROUTE, not by path, and that is forced rather than lazy: a cluster's
+      // public surfaces are keyed by `publicToken` and this function is handed an
+      // owner, which carries the cluster's *id*. The event branch below can name
+      // its exact paths because the event id is the path.
+      //
+      // Broader than the event branch — it clears every cluster's entry, not
+      // just this one's — and that costs nothing here: these pages are dynamic,
+      // so there is no static render to rebuild and the only thing being dropped
+      // is a client router-cache entry. Cheaper than a token lookup on every
+      // breakout write, and it cannot go stale the way a threaded-through token
+      // could.
+      revalidatePath("/register/c/[token]", "page")
+      revalidatePath("/register/c/[token]/walk-in", "page")
+      revalidatePath("/register/c/[token]/check-in", "page")
+    }
     return
   }
   const { eventId } = owner
@@ -180,7 +205,10 @@ export async function createBreakoutGroup(
       },
       select: { id: true },
     })
-    revalidateBreakoutSurfaces(owner)
+    // `publicPickers`: a table that did not exist a moment ago is one the forms
+    // and kiosks should be offering. Same reason `setBreakoutGroupEnabled` passes
+    // it — the set the pickers draw from just changed.
+    revalidateBreakoutSurfaces(owner, { publicPickers: true })
     return { success: true, data: { id: group.id } }
   } catch {
     return { success: false, error: "Failed to create breakout group" }
@@ -331,7 +359,8 @@ export async function deleteBreakoutGroup(
     // caller's owner argument without ever checking the group belonged to it.
     const { count } = await db.breakoutGroup.deleteMany({ where: { id: groupId, ...owner } })
     if (count === 0) return { success: false, error: "Breakout group not found" }
-    revalidateBreakoutSurfaces(owner)
+    // The mirror of create: a deleted table must stop being offered.
+    revalidateBreakoutSurfaces(owner, { publicPickers: true })
     return { success: true, data: undefined }
   } catch {
     return { success: false, error: "Failed to delete breakout group" }
@@ -393,9 +422,11 @@ async function facilitatorMemberIds(owner: BreakoutOwner): Promise<Set<string>> 
 const personKeyOf = personKeyFor
 
 /** The person keys already holding a seat at one of the owner's tables. */
-async function seatedPersonKeys(owner: BreakoutOwner): Promise<Set<string>> {
+async function seatedPersonKeys(
+  groups: Prisma.BreakoutGroupWhereInput
+): Promise<Set<string>> {
   const rows = await db.breakoutGroupMember.findMany({
-    where: { breakoutGroup: owner },
+    where: { breakoutGroup: groups },
     select: { registrant: { select: { id: true, memberId: true, guestId: true } } },
   })
   return new Set(rows.map((r) => personKeyOf(r.registrant)))
@@ -768,11 +799,7 @@ async function surfaceBreakoutSet(
   eventId: string,
   breakoutSet: BreakoutSet
 ): Promise<Prisma.BreakoutGroupWhereInput> {
-  const { breakoutOwner, clusterBreakoutOwner } = await resolvePoolScope(eventId)
-  if (!clusterBreakoutOwner) return { ...breakoutOwner }
-  return breakoutSet === "cluster"
-    ? { ...clusterBreakoutOwner }
-    : anyOwner([breakoutOwner, clusterBreakoutOwner])
+  return resolveSeatedScope(await resolveSurfaceBreakoutOwner(eventId, breakoutSet))
 }
 
 /**
@@ -1217,12 +1244,19 @@ export async function autoAssignBreakouts(
   // Day-scoped on a Collab: auto-assign fills the day's tables from the day's
   // registrations, not from every regular either ministry has ever had.
   const candidateWhere = await breakoutCandidateWhere(owner)
+  // Who already counts as placed. Wider than `owner` for an EVENT on a collab
+  // day, and that is the whole of the fix: this is the automatic route, so
+  // someone the day has already seated must not be swept into the event's
+  // dormant standing tables as well. Scoped on `owner` it read every one of
+  // them as unassigned and seated the lot a second time. See
+  // `resolveSeatedScope`.
+  const seatedScope = await resolveSeatedScope(owner)
 
   try {
     const unassigned = await db.eventRegistrant.findMany({
       where: {
         ...candidateWhere,
-        ...unassignedCandidateWhere(owner),
+        ...unassignedCandidateWhere(seatedScope),
       },
       select: { id: true, memberId: true, guestId: true },
     })
@@ -1238,7 +1272,7 @@ export async function autoAssignBreakouts(
     // row per member event; a plain event can still hold two rows for one person
     // through a duplicate sign-up. Either way, without this the same person is
     // placed once per registration row.
-    const seated = await seatedPersonKeys(owner)
+    const seated = await seatedPersonKeys(seatedScope)
 
     for (const registrant of unassigned) {
       const key = personKeyOf(registrant)
