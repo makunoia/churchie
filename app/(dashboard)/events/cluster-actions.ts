@@ -803,7 +803,11 @@ export async function registerForCluster(
                 eventId,
                 breakoutPick,
                 profile,
-                allowOverCapacity
+                allowOverCapacity,
+                null,
+                false,
+                // Same set the main branch fills — this is the same shared form.
+                "cluster"
               )
             : null
           results.push({
@@ -844,6 +848,11 @@ export async function registerForCluster(
           existingRegistrantId: existing?.id ?? null,
           touchedFields: touched,
           skipAutoAssign: deferBreakoutToCheckin,
+          // The day's own tables. A member event keeps its standing set and fills
+          // it from its own forms; the shared form fills the day's. On a Parallel
+          // day there is no cluster set and this resolves back to the event's,
+          // which is the only one it has.
+          breakoutSet: "cluster",
         })
         results.push({
           eventId,
@@ -935,6 +944,7 @@ export async function carryOverBreakoutGroups(
         locationCity: true,
         memberLimit: true,
         isEnabled: true,
+        manualAssignOnly: true,
         linkedSmallGroupId: true,
         lifeStages: { select: { id: true } },
         schedules: { select: { dayOfWeek: true, timeStart: true, timeEnd: true } },
@@ -1006,6 +1016,7 @@ export async function carryOverBreakoutGroups(
           locationCity: src.locationCity,
           memberLimit: src.memberLimit,
           isEnabled: src.isEnabled,
+          manualAssignOnly: src.manualAssignOnly,
           linkedSmallGroupId: src.linkedSmallGroupId,
           lifeStages: { connect: src.lifeStages.map((l) => ({ id: l.id })) },
           schedules: {

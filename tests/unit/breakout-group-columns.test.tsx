@@ -47,6 +47,7 @@ function makeRow(overrides: Partial<BreakoutGroupRow> = {}): BreakoutGroupRow {
     memberLimit: 12,
     memberCount: 3,
     isEnabled: true,
+    manualAssignOnly: false,
     linkedSmallGroupId: "sg1",
     linkedSmallGroup: { id: "sg1", name: "Eastwood Young Pros" },
     lifeStages: [{ id: "ls1", name: "Young Pro" }],

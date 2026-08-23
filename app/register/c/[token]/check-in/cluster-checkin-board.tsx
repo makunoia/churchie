@@ -203,7 +203,10 @@ export function ClusterCheckinBoard({
       const choices = await getCheckinBreakoutChoices(
         subject.registrantId,
         subject.eventId,
-        subject.occurrenceId
+        subject.occurrenceId,
+        // The day's tables, not the member event's standing set. Both are in play
+        // for this person; the kiosk they are standing at is what decides.
+        "cluster"
       )
       setLoading(false)
       if (choices.success && choices.data && !choices.data.seatedGroupName) {
@@ -236,7 +239,8 @@ export function ClusterCheckinBoard({
       breakoutSubject.registrantId,
       breakoutSubject.eventId,
       breakoutSubject.occurrenceId,
-      selectedBreakoutId
+      selectedBreakoutId,
+      "cluster"
     )
     setLoading(false)
     if (!result.success) {

@@ -927,6 +927,19 @@ model BreakoutGroup {
   // its roster, its facilitator and its linked DGroup.
   isEnabled     Boolean      @default(true)
 
+  // Never *suggested*, never auto-assigned — but still fully pickable.
+  //
+  // The narrow sibling of `isEnabled`. Off-switching a group closes every
+  // automatic AND public route into it; this closes only the automatic ones, so
+  // the table keeps its place in the registration form's dropdown, the kiosk's
+  // browse list and the admin add/transfer screens. For a table an admin fills
+  // by hand but doesn't want the matcher pushing arrivals into.
+  //
+  // Deliberately NOT part of `ENABLED_BREAKOUT_WHERE` or any candidate query:
+  // the picker and the suggester share one loaded set, so this has to reach
+  // `BreakoutCandidate` and be applied in `isEligible` alone.
+  manualAssignOnly Boolean   @default(false)
+
   // Linked small group for temp-membership assignment on registrant assignment
   linkedSmallGroupId String?
   linkedSmallGroup   SmallGroup? @relation("BreakoutLinkedGroup", fields: [linkedSmallGroupId], references: [id], onDelete: SetNull)

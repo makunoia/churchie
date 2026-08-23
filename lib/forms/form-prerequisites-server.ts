@@ -68,6 +68,7 @@ export async function clusterFormPrerequisites(
       totalGroups,
       enabledGroups,
       staffedGroups,
+      autoAssignableGroups,
       genderedGroups,
       eventsWithoutBreakoutModule,
       eventsAutoAssigning,
@@ -120,6 +121,23 @@ export async function clusterFormPrerequisites(
       } Breakout Groups switched on, so anyone routed to ${
         eventsWithoutBreakoutModule.length === 1 ? "that ministry" : "those ministries"
       } will have their choice ignored. Enable the module in that event's Settings → Modules.`,
+    }
+  } else if (
+    eventsAutoAssigning.length > 0 &&
+    !asksAtCheckin &&
+    autoAssignableGroups === 0
+  ) {
+    // Same dead end as the per-event chain: the events place people on submit,
+    // and every table of the day's is held back, so nobody is placed and nobody
+    // is asked. Only reachable when the kiosk isn't asking either — with
+    // `asksAtCheckin` on, registration defers by design and the day's step is
+    // where the question lands.
+    prerequisites.sectionBreakout = {
+      message: `All ${enabledGroups} of this event day's breakout group${
+        enabledGroups === 1 ? " is" : "s are"
+      } set to manual assignment only, so ${listNames(eventsAutoAssigning)} ${
+        eventsAutoAssigning.length === 1 ? "places" : "place"
+      } nobody on submit and anyone who skips this step stays unseated. Clear "Manual assignment only" on a group in Breakouts.`,
     }
   } else if (eventsAutoAssigning.length > 0 && !asksAtCheckin) {
     prerequisites.sectionBreakout = {
@@ -188,7 +206,10 @@ export async function eventFormPrerequisites(
   eventId: string,
   autoAssignBreakout: boolean
 ): Promise<TogglePrerequisites> {
-  const [globals, { totalGroups, enabledGroups, staffedGroups, genderedGroups }] = await Promise.all([
+  const [
+    globals,
+    { totalGroups, enabledGroups, staffedGroups, autoAssignableGroups, genderedGroups },
+  ] = await Promise.all([
     globalFieldPrerequisites(),
     breakoutPickerReadiness(eventId),
   ])
@@ -197,7 +218,19 @@ export async function eventFormPrerequisites(
 
   Object.assign(prerequisites, genderFieldPrerequisite(genderedGroups, autoAssignBreakout))
 
-  if (autoAssignBreakout) {
+  if (autoAssignBreakout && enabledGroups > 0 && autoAssignableGroups === 0) {
+    // Auto-assign suppresses the step in favour of a placement that then cannot
+    // happen: every table is held back for manual assignment, so the suggester
+    // has nothing to return and the person is left unseated with no step to
+    // answer. The two switches are individually reasonable and only this pairing
+    // is a dead end, which is why it is called out ahead of the ordinary
+    // auto-assign notice rather than folded into it.
+    prerequisites.sectionBreakout = {
+      message: `Auto-assign is on, so people never see this step — but all ${enabledGroups} of this event's breakout group${
+        enabledGroups === 1 ? " is" : "s are"
+      } set to manual assignment only, so nobody is placed either. Switch to manual below, or clear "Manual assignment only" on a group in Breakouts.`,
+    }
+  } else if (autoAssignBreakout) {
     // Still true of the kiosk on a single event, and worth saying there: it
     // withholds its own automatic placement while this section is on, but by then
     // anyone who pre-registered or came through the door was already placed at

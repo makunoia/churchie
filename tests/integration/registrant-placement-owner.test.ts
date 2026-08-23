@@ -8,19 +8,25 @@ import {
 /**
  * The registrant detail page's Breakout section, on a Collab day.
  *
- * The page asked three questions with a bare `eventId` — which tables exist,
- * which one this person staffs, and where their seat links to — and a Collab
- * day's tables belong to the cluster, so all three answered about the wrong set:
- * the assign list offered the member event's standing tables (untouched and
- * unused for the day) while hiding every table of the day, the facilitator badge
- * never appeared, and the link under an assigned seat pointed into the event
- * workspace, whose `/breakouts/[groupId]` route scopes on `{ id, eventId }` and
- * therefore 404s on a cluster-owned table.
+ * The page asks three questions, and they do NOT all answer about the same set of
+ * tables — which is the whole point of this file:
+ *
+ *  - **Which tables to offer** is one set: the event's own, because this is the
+ *    event workspace and an assignment here writes through `surface.owner`. The
+ *    day's tables are placed from the day's own Breakouts page.
+ *  - **Whether this person staffs a table** spans both. It is a guard, not an
+ *    offer — a host of the day's table is exactly as unseatable as a host of the
+ *    event's own, and answering from one set would badge some hosts and hand the
+ *    rest an assign list.
+ *  - **Where a seat links to** follows the group's OWN owner columns, so a seat
+ *    at a cluster table lands in the cluster workspace and a seat at the event's
+ *    own lands in the event's. The event route scopes on `{ id, eventId }` and
+ *    404s on a cluster-owned table, which is what this originally fixed.
  *
  *  - unit:        `breakoutGroupHref` answers from the group's own owner columns
- *  - integration: the day's tables are the ones offered; the seat's link lands in
- *                 the cluster workspace; a facilitator of a cluster-owned table
- *                 is recognised
+ *  - integration: the offer list is the workspace's own set; a facilitator of a
+ *                 cluster-owned table is still recognised; the seat's link lands
+ *                 in whichever workspace serves it
  *  - regression:  a single event (no cluster) and a Parallel day are unchanged
  *  - edge case:   a seat held at a member event's own table still links into the
  *                 event workspace; an unowned row yields no link
@@ -132,16 +138,19 @@ describe("unit — breakoutGroupHref answers from the group's own owner", () => 
 // ─── Integration ─────────────────────────────────────────────────────────────
 
 describe("integration — a Collab day's registrant", () => {
-  it("is offered the day's own tables, not the member event's standing ones", async () => {
+  it("is offered this workspace's own tables, not the day's", async () => {
+    // The offer list is one set — the workspace you are standing in. An
+    // assignment made here writes through `surface.owner`, and the day's tables
+    // are placed from the day's own Breakouts page.
     const event = await seedEvent()
     const cluster = await seedCluster([event.id])
-    await db.breakoutGroup.create({
+    const standing = await db.breakoutGroup.create({
       data: { eventId: event.id, name: "Standing table" },
-    })
-    const dayTable = await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "Day table" },
       select: { id: true },
     })
+    await db.breakoutGroup.create({
+      data: { clusterId: cluster.id, name: "Day table" },
+    })
     const member = await seedMember()
     const registrant = await seedRegistrant(event.id, member.id)
 
@@ -152,13 +161,13 @@ describe("integration — a Collab day's registrant", () => {
       gender: null,
     })
 
-    expect(placement.availableGroups.map((g) => g.name)).toEqual(["Day table"])
-    expect(placement.availableGroups[0].id).toBe(dayTable.id)
+    expect(placement.availableGroups.map((g) => g.name)).toEqual(["Standing table"])
+    expect(placement.availableGroups[0].id).toBe(standing.id)
   })
 
-  it("addresses the cluster, so an assignment writes to the day's tables", async () => {
+  it("addresses the event, so an assignment writes to its own tables", async () => {
     const event = await seedEvent()
-    const cluster = await seedCluster([event.id])
+    await seedCluster([event.id])
     const member = await seedMember()
     const registrant = await seedRegistrant(event.id, member.id)
 
@@ -169,8 +178,8 @@ describe("integration — a Collab day's registrant", () => {
       gender: null,
     })
 
-    expect(placement.surface.owner).toEqual({ clusterId: cluster.id })
-    expect(placement.surface.basePath).toBe(`/cluster/${cluster.id}`)
+    expect(placement.surface.owner).toEqual({ eventId: event.id })
+    expect(placement.surface.basePath).toBe(`/event/${event.id}`)
   })
 
   it("links an existing seat into the cluster workspace, which serves it", async () => {
@@ -308,14 +317,16 @@ describe("regression — an event that is not on a Collab day", () => {
 
 describe("edge cases", () => {
   it("excludes a table the registrant already sits at from the offer list", async () => {
+    // Inside a cluster, over the event's own set — the exclusion rule is what is
+    // under test here, and it is the same rule whoever owns the tables.
     const event = await seedEvent()
-    const cluster = await seedCluster([event.id])
+    await seedCluster([event.id])
     const seated = await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "A table" },
+      data: { eventId: event.id, name: "A table" },
       select: { id: true },
     })
     const other = await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "B table" },
+      data: { eventId: event.id, name: "B table" },
       select: { id: true },
     })
     const member = await seedMember()
@@ -334,14 +345,14 @@ describe("edge cases", () => {
     expect(placement.availableGroups.map((g) => g.id)).toEqual([other.id])
   })
 
-  it("keeps the gender filter on the day's tables", async () => {
+  it("keeps the gender filter on the offered tables", async () => {
     const event = await seedEvent()
-    const cluster = await seedCluster([event.id])
+    await seedCluster([event.id])
     await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "Men's table", genderFocus: "Male" },
+      data: { eventId: event.id, name: "Men's table", genderFocus: "Male" },
     })
     const womens = await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "Women's table", genderFocus: "Female" },
+      data: { eventId: event.id, name: "Women's table", genderFocus: "Female" },
       select: { id: true },
     })
     const member = await seedMember("Maria", "Female")
@@ -359,12 +370,12 @@ describe("edge cases", () => {
 
   it("offers every table to a registrant with no gender on file", async () => {
     const event = await seedEvent()
-    const cluster = await seedCluster([event.id])
+    await seedCluster([event.id])
     await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "Men's table", genderFocus: "Male" },
+      data: { eventId: event.id, name: "Men's table", genderFocus: "Male" },
     })
     await db.breakoutGroup.create({
-      data: { clusterId: cluster.id, name: "Women's table", genderFocus: "Female" },
+      data: { eventId: event.id, name: "Women's table", genderFocus: "Female" },
     })
     const member = await seedMember()
     const registrant = await seedRegistrant(event.id, member.id)

@@ -400,6 +400,7 @@ describe("breakoutPickerReadiness", () => {
       totalGroups: 2,
       enabledGroups: 0,
       staffedGroups: 0,
+      autoAssignableGroups: 0,
       genderedGroups: 0,
     })
   })
@@ -453,6 +454,7 @@ describe("breakoutPickerReadiness", () => {
       totalGroups: 2,
       enabledGroups: 1,
       staffedGroups: 1,
+      autoAssignableGroups: 1,
       genderedGroups: 0,
     })
   })

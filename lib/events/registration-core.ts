@@ -5,8 +5,8 @@ import { db } from "@/lib/db"
 import { suggestBreakoutGroup } from "@/lib/breakout-suggestion"
 import { fetchBreakoutCandidates } from "@/lib/breakout-suggestion-server"
 import { breakoutOccupancy } from "@/lib/breakouts/occupancy"
-import { isClusterOwner } from "@/lib/breakouts/owner"
-import { resolvePoolScope } from "@/lib/events/pool-scope"
+import { isClusterOwner, type BreakoutSet } from "@/lib/breakouts/owner"
+import { resolveSurfaceBreakoutOwner } from "@/lib/events/pool-scope"
 import { tryCreateSmallGroupRequestFromBreakout } from "@/lib/create-small-group-request"
 import { recordMemberGroupClaim } from "@/lib/small-groups/member-claim"
 import { createSeekerRequestFromRegistration } from "@/lib/small-groups/seeker-requests"
@@ -141,7 +141,14 @@ export async function assignBreakoutForRegistrant(
    * there *is* a next surface: the walk-in door checks people in on the spot, so
    * nobody deferred there would ever be asked again.
    */
-  skipAutoAssign = false
+  skipAutoAssign = false,
+  /**
+   * Which set of tables this surface is filling — the event's own by default, the
+   * day's when a cluster's shared form or kiosk is the one asking. See
+   * `BreakoutSet`: an event on a Collab has two valid sets and only the surface
+   * knows which one it means.
+   */
+  breakoutSet: BreakoutSet = "event"
 ): Promise<AssignedBreakout> {
   try {
     const event = await db.event.findUnique({
@@ -153,9 +160,10 @@ export async function assignBreakoutForRegistrant(
     })
     if (!event || event.modules.length === 0) return null
 
-    // Which tables are in play: this event's standing set, or the cluster's set
-    // for a Collab day (CCF-148).
-    const { breakoutOwner: owner } = await resolvePoolScope(eventId)
+    // Which tables are in play. Both sets exist on a Collab day and the surface
+    // picks; everywhere else `resolveSurfaceBreakoutOwner` returns the event's own
+    // whatever is asked for.
+    const owner = await resolveSurfaceBreakoutOwner(eventId, breakoutSet)
 
     // A registrant may already be placed. The reuse paths — a walk-in for someone
     // who registered earlier, and amend — run this function against a row that has
@@ -251,8 +259,8 @@ export async function assignBreakoutForRegistrant(
       // the picker (`offerBreakoutPicker` on the walk-in page), an event with it
       // switched on had no gated path at all.
       const candidates = atDoor
-        ? await fetchBreakoutCandidates(eventId, atDoor.occurrenceId, true)
-        : await fetchBreakoutCandidates(eventId, null, false)
+        ? await fetchBreakoutCandidates(eventId, atDoor.occurrenceId, true, breakoutSet)
+        : await fetchBreakoutCandidates(eventId, null, false, breakoutSet)
       const best = suggestBreakoutGroup(candidates, {
         gender: profile.gender,
         birthYear: profile.birthYear,
@@ -965,8 +973,13 @@ export async function completeEventRegistration(opts: {
    * explicit `breakoutPick` still lands.
    */
   skipAutoAssign?: boolean
+  /**
+   * Which set of tables the surface that collected this registration fills. A
+   * cluster's shared form passes `"cluster"`; every per-event form leaves it.
+   */
+  breakoutSet?: BreakoutSet
 }): Promise<{ id: string; breakoutGroup: AssignedBreakout }> {
-  const { eventId, person, data, breakoutPick, profile, clusterId, walkIn, allowOverCapacity, existingRegistrantId, touchedFields, skipAutoAssign } = opts
+  const { eventId, person, data, breakoutPick, profile, clusterId, walkIn, allowOverCapacity, existingRegistrantId, touchedFields, skipAutoAssign, breakoutSet } = opts
 
   let registrantId: string
   if (existingRegistrantId) {
@@ -1004,7 +1017,8 @@ export async function completeEventRegistration(opts: {
     // this narrows automatic placement to staffed groups, so the worst a forged
     // flag buys is a stricter pool.
     walkIn ?? null,
-    !!skipAutoAssign
+    !!skipAutoAssign,
+    breakoutSet ?? "event"
   )
 
   // Someone who asked to join a DGroup becomes a request an admin can actually

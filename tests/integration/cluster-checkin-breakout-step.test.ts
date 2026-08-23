@@ -3,6 +3,7 @@ import { db } from "@/lib/db"
 import { checkInToCluster, registerForCluster } from "@/app/(dashboard)/events/cluster-actions"
 import {
   getCheckinBreakoutChoices,
+  getRegistrantBreakoutGroupName,
   pickCheckinBreakout,
 } from "@/app/(dashboard)/events/breakout-actions"
 import { clusterFormPrerequisites } from "@/lib/forms/form-prerequisites-server"
@@ -200,7 +201,11 @@ async function tapCheckin(token: string, key: string) {
   const choices = await getCheckinBreakoutChoices(
     subject.registrantId,
     subject.eventId,
-    subject.occurrenceId
+    subject.occurrenceId,
+    // The day's kiosk fills the day's set. `ClusterCheckinBoard` passes the same
+    // literal; a member event keeps its own tables and fills them from its own
+    // kiosk.
+    "cluster"
   )
   expect(choices.success).toBe(true)
   return { subject, choices: choices.success ? choices.data : null }
@@ -226,7 +231,8 @@ describe("integration — registering through the day's form, then checking in",
       subject!.registrantId,
       subject!.eventId,
       subject!.occurrenceId,
-      tables[1].id
+      tables[1].id,
+      "cluster"
     )
     expect(picked.success).toBe(true)
     expect(await seatOf(subject!.registrantId)).toBe("Table 2")
@@ -287,10 +293,95 @@ describe("regression — auto-assign waits only where someone else will ask", ()
       second.subject!.registrantId,
       second.subject!.eventId,
       second.subject!.occurrenceId,
-      tables[0].id
+      tables[0].id,
+      "cluster"
     )
     expect(picked.success).toBe(true)
     expect(await seatOf(second.subject!.registrantId)).toBe("Table 1")
+  })
+
+  it("does not read a standing seat at the member event's own table as an answer about the day", async () => {
+    // The sharpest form of the two-sets bug, and the reason the already-seated
+    // guard is scoped to the set the surface fills rather than to both.
+    //
+    // `EventRegistrant` is one row per person per SERIES and `BreakoutGroupMember`
+    // has no per-occurrence scoping, so a recurring event's regular holds a seat
+    // at their standing table permanently. A guard spanning both sets found that
+    // seat, called them placed and skipped the day's step — and because
+    // `deferBreakoutToCheckin` had already held registration off *precisely*
+    // because the kiosk was the one asking, they finished the day seated nowhere
+    // and were shown the name of a table that wasn't running.
+    const { cluster, event } = await seedCollabDay({ autoAssign: false })
+    const outcome = await registerOnDay(cluster, event.id)
+
+    const standing = await db.breakoutGroup.create({
+      data: { eventId: event.id, name: "Standing Table" },
+      select: { id: true },
+    })
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: standing.id, registrantId: outcome.registrantId! },
+    })
+
+    const { choices } = await tapCheckin(cluster.publicToken, await guestKey())
+    expect(choices?.seatedGroupName).toBeNull()
+    expect(choices?.options.map((o) => o.name).sort()).toEqual(["Table 1", "Table 2"])
+  })
+
+  it("seats the day's table beside the standing one rather than instead of it", async () => {
+    // Holding a seat in each set is the ordinary outcome, not a fault: the
+    // standing table is the event's and stays the event's, the day's table is
+    // today's. This is what the write path has always allowed — the guard now
+    // agrees with it.
+    const { cluster, event, tables } = await seedCollabDay({ autoAssign: false })
+    const outcome = await registerOnDay(cluster, event.id)
+    const standing = await db.breakoutGroup.create({
+      data: { eventId: event.id, name: "Standing Table" },
+      select: { id: true },
+    })
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: standing.id, registrantId: outcome.registrantId! },
+    })
+
+    const { subject } = await tapCheckin(cluster.publicToken, await guestKey())
+    const picked = await pickCheckinBreakout(
+      subject!.registrantId,
+      subject!.eventId,
+      subject!.occurrenceId,
+      tables[0].id,
+      "cluster"
+    )
+    expect(picked.success).toBe(true)
+
+    const seats = await db.breakoutGroupMember.findMany({
+      where: { registrantId: subject!.registrantId },
+      select: { breakoutGroupId: true },
+    })
+    expect(seats.map((s) => s.breakoutGroupId).sort()).toEqual(
+      [standing.id, tables[0].id].sort()
+    )
+  })
+
+  it("names the day's table on the welcome screen, never the standing one", async () => {
+    // A person holding a seat in each set is ordinary (see above), so a single
+    // `findFirst` over the union named whichever row Postgres reached first.
+    // This is a check-in confirmation: the only useful answer is the table being
+    // run in the room they are standing in.
+    const { cluster, event, tables } = await seedCollabDay({ autoAssign: false })
+    const outcome = await registerOnDay(cluster, event.id)
+    const standing = await db.breakoutGroup.create({
+      data: { eventId: event.id, name: "Standing Table" },
+      select: { id: true },
+    })
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: standing.id, registrantId: outcome.registrantId! },
+    })
+    await db.breakoutGroupMember.create({
+      data: { breakoutGroupId: tables[0].id, registrantId: outcome.registrantId! },
+    })
+
+    expect(await getRegistrantBreakoutGroupName(outcome.registrantId!, event.id)).toEqual({
+      name: "Table 1",
+    })
   })
 })
 

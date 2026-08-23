@@ -7,13 +7,14 @@ import { requireBreakoutWrite } from "@/lib/events/require-event-write"
 import { breakoutGroupSchema } from "@/lib/validations/breakout-group"
 import type { BreakoutGroupFormValues } from "@/lib/validations/breakout-group"
 import { matchBreakoutGroups } from "@/lib/matching"
+import type { Prisma } from "@/app/generated/prisma/client"
 import { unassignedCandidateWhere } from "@/lib/breakouts/candidate-pool"
-import { isClusterOwner, type BreakoutOwner } from "@/lib/breakouts/owner"
+import { anyOwner, isClusterOwner, type BreakoutOwner, type BreakoutSet } from "@/lib/breakouts/owner"
 import {
   breakoutCandidateEventIds,
   breakoutCandidateWhere,
 } from "@/lib/breakouts/candidate-events"
-import { resolvePoolScope } from "@/lib/events/pool-scope"
+import { resolvePoolScope, resolveSurfaceBreakoutOwner } from "@/lib/events/pool-scope"
 import { isEventStaffViewer } from "@/lib/events/staff-viewer"
 import { assignBreakoutForRegistrant } from "@/lib/events/registration-core"
 import { fetchBreakoutAvailability } from "@/lib/breakout-suggestion-server"
@@ -142,7 +143,19 @@ export async function createBreakoutGroup(
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" }
   }
-  const { name, facilitatorId, coFacilitatorId, memberLimit, linkedSmallGroupId, ...profile } = parsed.data
+  // `manualAssignOnly` is destructured out with the non-matching fields on
+  // purpose: `profile` is what `validateTimothyProfile` reads and what
+  // `clearedMatchingProfile` mirrors, and this is a routing setting, not a
+  // criterion a Timothy has to fill in.
+  const {
+    name,
+    facilitatorId,
+    coFacilitatorId,
+    memberLimit,
+    manualAssignOnly,
+    linkedSmallGroupId,
+    ...profile
+  } = parsed.data
 
   const timothyError = await validateTimothyProfile(facilitatorId, profile)
   if (timothyError) return { success: false, error: timothyError }
@@ -157,6 +170,7 @@ export async function createBreakoutGroup(
         facilitatorId: facilitatorId ?? null,
         coFacilitatorId: coFacilitatorId ?? null,
         memberLimit: memberLimit ?? null,
+        manualAssignOnly: manualAssignOnly ?? false,
         linkedSmallGroupId: linkedSmallGroupId ?? null,
         lifeStages: { connect: profile.lifeStageIds.map((id) => ({ id })) },
         genderFocus: profile.genderFocus ?? null,
@@ -185,7 +199,16 @@ export async function updateBreakoutGroup(
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" }
   }
-  const { name, facilitatorId, coFacilitatorId, memberLimit, linkedSmallGroupId, ...profile } = parsed.data
+  // See `createBreakoutGroup` on why `manualAssignOnly` is kept out of `profile`.
+  const {
+    name,
+    facilitatorId,
+    coFacilitatorId,
+    memberLimit,
+    manualAssignOnly,
+    linkedSmallGroupId,
+    ...profile
+  } = parsed.data
 
   const timothyError = await validateTimothyProfile(facilitatorId, profile)
   if (timothyError) return { success: false, error: timothyError }
@@ -194,7 +217,7 @@ export async function updateBreakoutGroup(
   // without this an admin scoped to event A could pass event B's group id.
   const existing = await db.breakoutGroup.findFirst({
     where: { id: groupId, ...owner },
-    select: { facilitatorId: true, coFacilitatorId: true },
+    select: { facilitatorId: true, coFacilitatorId: true, manualAssignOnly: true },
   })
   if (!existing) return { success: false, error: "Breakout group not found" }
 
@@ -205,6 +228,9 @@ export async function updateBreakoutGroup(
   const nextFacilitatorId = facilitatorId === undefined ? existing.facilitatorId : facilitatorId
   const nextCoFacilitatorId =
     coFacilitatorId === undefined ? existing.coFacilitatorId : coFacilitatorId
+  // Same rule: a caller that never showed the control must not switch it off.
+  const nextManualAssignOnly =
+    manualAssignOnly === undefined ? existing.manualAssignOnly : manualAssignOnly
 
   // The schema compares the two *submitted* ids; it can't see a stored one that
   // wasn't submitted, so the same volunteer could land in both slots.
@@ -229,6 +255,11 @@ export async function updateBreakoutGroup(
         facilitatorId: nextFacilitatorId,
         coFacilitatorId: nextCoFacilitatorId,
         memberLimit: memberLimit ?? null,
+        // Outside the ternary below: emptying the facilitator clears the
+        // *matching profile*, and how a group is reached is not one of its
+        // criteria. A table held back for manual assignment stays held back when
+        // its facilitator drops out.
+        manualAssignOnly: nextManualAssignOnly,
         ...(unlinkedFacilitator
           ? { linkedSmallGroupId: null, ...clearedMatchingProfile() }
           : {
@@ -241,8 +272,11 @@ export async function updateBreakoutGroup(
             }),
       },
     })
-    // The edit drawer is mounted on the detail page too.
-    revalidateBreakoutSurfaces(owner, { groupId })
+    // The edit drawer is mounted on the detail page too. `publicPickers` because
+    // the drawer edits what the public form *ranks* (gender focus, life stages,
+    // member limit) and now what it suggests at all (`manualAssignOnly`) — the
+    // same reason `setBreakoutGroupEnabled` passes it.
+    revalidateBreakoutSurfaces(owner, { groupId, publicPickers: true })
     return { success: true, data: undefined }
   } catch {
     return { success: false, error: "Failed to update breakout group" }
@@ -697,6 +731,51 @@ export async function transferRegistrantToBreakout(
 // ─── Auto-assign on check-in ─────────────────────────────────────────────────
 
 /**
+ * The seats that answer for this surface — what the already-seated and
+ * already-a-facilitator guards ask about.
+ *
+ * **A seat counts against you if it is in the set being filled, or if it was made
+ * for today.** On a Collab day the cluster's set is today's; a member event's
+ * standing tables are dormant, not being run. So the two directions are not the
+ * same question, and the guard is deliberately asymmetric:
+ *
+ *  - Filling the **day's** set (`"cluster"` — the shared form, the day's kiosk):
+ *    only the day's seats answer. A standing seat is not an answer about today.
+ *  - Filling an **event's own** set (`"event"`): both answer. The day's seat is
+ *    today's placement, and there is nothing to gain by moving someone into a
+ *    table that isn't running.
+ *
+ * The `"cluster"` direction is a fix. It used to span both sets on the reasoning
+ * that a person seated at the day's table must not pick up a second seat at their
+ * event's — which is the `"event"` direction, and stays. Applied symmetrically it
+ * broke the commonest shape of collab day: `EventRegistrant` is one row per
+ * person per SERIES and `BreakoutGroupMember` has no per-occurrence scoping, so a
+ * recurring event's regular holds a seat at their standing table permanently. The
+ * day's kiosk found it, reported them already placed and skipped the Breakout
+ * step — and with `deferBreakoutToCheckin` holding registration off *because* the
+ * kiosk was the one asking, the regular finished the day seated nowhere and was
+ * shown the name of a table that wasn't running.
+ *
+ * Note this is wider than the write in the `"event"` direction, where
+ * `assignBreakoutForRegistrant` scopes `current` to the surface's owner alone.
+ * That is not drift: `current` also has to name the row to MOVE for an explicit
+ * pick, and a pick of an event table must not delete the day's seat.
+ *
+ * Combine the result with `AND`, never a spread — it carries an `OR` whenever
+ * both sets are in play.
+ */
+async function surfaceBreakoutSet(
+  eventId: string,
+  breakoutSet: BreakoutSet
+): Promise<Prisma.BreakoutGroupWhereInput> {
+  const { breakoutOwner, clusterBreakoutOwner } = await resolvePoolScope(eventId)
+  if (!clusterBreakoutOwner) return { ...breakoutOwner }
+  return breakoutSet === "cluster"
+    ? { ...clusterBreakoutOwner }
+    : anyOwner([breakoutOwner, clusterBreakoutOwner])
+}
+
+/**
  * Called after a registrant checks in to an occurrence.
  * Silently assigns them to the best-matching breakout group if they're not
  * already assigned to one. Never throws — failures are swallowed so they
@@ -715,13 +794,19 @@ export async function transferRegistrantToBreakout(
  */
 export async function autoAssignRegistrantToBreakout(
   registrantId: string,
-  eventId: string
+  eventId: string,
+  breakoutSet: BreakoutSet = "event"
 ): Promise<void> {
   try {
-    const { breakoutOwner: owner } = await resolvePoolScope(eventId)
+    const owner = await resolveSurfaceBreakoutOwner(eventId, breakoutSet)
+    // See `surfaceBreakoutSet` for which seats answer here. Filling the day's set
+    // asks only about the day's seats — a standing seat at the event's own table
+    // is not an answer about today, and treating it as one left the day's
+    // regulars seated nowhere. Filling the event's own set still asks about both.
+    const thisSet = await surfaceBreakoutSet(eventId, breakoutSet)
 
     const alreadyAssigned = await db.breakoutGroupMember.findFirst({
-      where: { registrantId, breakoutGroup: owner },
+      where: { registrantId, breakoutGroup: thisSet },
       select: { breakoutGroupId: true },
     })
     if (alreadyAssigned) return
@@ -738,7 +823,7 @@ export async function autoAssignRegistrantToBreakout(
     if (registrant?.memberId || registrant?.guestId) {
       const seatedElsewhere = await db.breakoutGroupMember.findFirst({
         where: {
-          breakoutGroup: owner,
+          breakoutGroup: thisSet,
           registrant: registrant.memberId
             ? { memberId: registrant.memberId }
             : { guestId: registrant.guestId },
@@ -749,12 +834,19 @@ export async function autoAssignRegistrantToBreakout(
     }
 
     if (registrant?.memberId) {
+      // AND, not a spread: a group filter may itself carry an `OR`, and a second
+      // `OR` key in the same object would replace it — leaving a check that
+      // matches a facilitator of any table anywhere.
       const isFacilitator = await db.breakoutGroup.findFirst({
         where: {
-          ...owner,
-          OR: [
-            { facilitator: { memberId: registrant.memberId } },
-            { coFacilitator: { memberId: registrant.memberId } },
+          AND: [
+            thisSet,
+            {
+              OR: [
+                { facilitator: { memberId: registrant.memberId } },
+                { coFacilitator: { memberId: registrant.memberId } },
+              ],
+            },
           ],
         },
         select: { id: true },
@@ -786,22 +878,38 @@ export async function autoAssignRegistrantToBreakout(
  * Used by the public check-in success screen to show the person which breakout
  * group they belong to. Best-effort — returns null when unassigned or on error.
  *
- * Owner-scoped for the same reason as `autoAssignRegistrantToBreakout`: on a
- * collab day the person sits at one of the CLUSTER's tables, so the old
- * `breakoutGroup: { eventId }` filter found nothing and the success screen told
- * everyone they had no group.
+ * Spans BOTH sets, and takes no `BreakoutSet` to choose between them. Every other
+ * breakout call has to know which set it is filling, because a write lands in one
+ * of them; this one only asks "where are you sitting", and the honest answer is
+ * wherever that is. Narrowing it to the event's set would tell someone seated at
+ * the collab day's table they had no group — which is the bug this originally
+ * fixed, in the opposite direction.
+ *
+ * **The day's set is asked FIRST, and that ordering is the answer rather than a
+ * tie-break.** Holding a seat in each set is an ordinary state, not a fault: a
+ * recurring event's regular keeps their standing seat for the whole series while
+ * the collab day seats them at one of its own. A single `findFirst` over the
+ * union returned whichever row Postgres happened to reach first, so the screen
+ * named the standing table about as often as today's. This is a check-in
+ * confirmation — the only table it can usefully name is the one being run in the
+ * room the person is standing in.
  */
 export async function getRegistrantBreakoutGroupName(
   registrantId: string,
   eventId: string
 ): Promise<{ name: string } | null> {
   try {
-    const { breakoutOwner: owner } = await resolvePoolScope(eventId)
-    const membership = await db.breakoutGroupMember.findFirst({
-      where: { registrantId, breakoutGroup: owner },
-      select: { breakoutGroup: { select: { name: true } } },
-    })
-    return membership ? { name: membership.breakoutGroup.name } : null
+    const { breakoutOwner, clusterBreakoutOwner } = await resolvePoolScope(eventId)
+    // Ordered, not unioned. Off a collab day the first entry is the only one.
+    for (const owner of [clusterBreakoutOwner, breakoutOwner]) {
+      if (!owner) continue
+      const membership = await db.breakoutGroupMember.findFirst({
+        where: { registrantId, breakoutGroup: owner },
+        select: { breakoutGroup: { select: { name: true } } },
+      })
+      if (membership) return { name: membership.breakoutGroup.name }
+    }
+    return null
   } catch {
     return null
   }
@@ -849,7 +957,7 @@ async function checkinRegistrantProfile(registrantId: string): Promise<{
  */
 async function seatedGroupFor(
   registrantId: string,
-  owner: BreakoutOwner
+  groups: Prisma.BreakoutGroupWhereInput
 ): Promise<{ name: string } | null> {
   const registrant = await db.eventRegistrant.findUnique({
     where: { id: registrantId },
@@ -864,7 +972,7 @@ async function seatedGroupFor(
       : null
   const seat = await db.breakoutGroupMember.findFirst({
     where: {
-      breakoutGroup: owner,
+      breakoutGroup: groups,
       ...(personFilter ? { registrant: personFilter } : { registrantId }),
     },
     select: { breakoutGroup: { select: { name: true } } },
@@ -905,19 +1013,25 @@ async function isCheckedInFor(
 /** Does this person run one of the owner's tables? They attend as staff, not as a guest. */
 async function facilitatesAnyGroup(
   registrantId: string,
-  owner: BreakoutOwner
+  groups: Prisma.BreakoutGroupWhereInput
 ): Promise<boolean> {
   const registrant = await db.eventRegistrant.findUnique({
     where: { id: registrantId },
     select: { memberId: true },
   })
   if (!registrant?.memberId) return false
+  // AND, not a spread: `groups` is a caller-supplied filter that may itself carry
+  // an `OR`, and two `OR` keys in one object silently overwrite each other.
   const group = await db.breakoutGroup.findFirst({
     where: {
-      ...owner,
-      OR: [
-        { facilitator: { memberId: registrant.memberId } },
-        { coFacilitator: { memberId: registrant.memberId } },
+      AND: [
+        groups,
+        {
+          OR: [
+            { facilitator: { memberId: registrant.memberId } },
+            { coFacilitator: { memberId: registrant.memberId } },
+          ],
+        },
       ],
     },
     select: { id: true },
@@ -966,7 +1080,8 @@ async function facilitatesAnyGroup(
 export async function getCheckinBreakoutChoices(
   registrantId: string,
   eventId: string,
-  occurrenceId: string | null
+  occurrenceId: string | null,
+  breakoutSet: BreakoutSet = "event"
 ): Promise<ActionResult<CheckinBreakoutChoices | null>> {
   try {
     const registrant = await db.eventRegistrant.findUnique({
@@ -977,13 +1092,18 @@ export async function getCheckinBreakoutChoices(
       return { success: false, error: "Registration not found" }
     }
 
-    const { breakoutOwner: owner } = await resolvePoolScope(eventId)
+    // Which seats count as "already spoken for" — see `surfaceBreakoutSet`. The
+    // day's kiosk asks about the day's seats alone; asking wider is what made it
+    // skip its own step for every regular who already held a standing seat. The
+    // set this kiosk actually FILLS is `breakoutSet`, resolved further down by
+    // `fetchBreakoutAvailability`.
+    const thisSet = await surfaceBreakoutSet(eventId, breakoutSet)
 
-    if (await facilitatesAnyGroup(registrantId, owner)) {
+    if (await facilitatesAnyGroup(registrantId, thisSet)) {
       return { success: true, data: null }
     }
 
-    const seated = await seatedGroupFor(registrantId, owner)
+    const seated = await seatedGroupFor(registrantId, thisSet)
     if (seated) {
       return {
         success: true,
@@ -1000,7 +1120,8 @@ export async function getCheckinBreakoutChoices(
     const { candidates, totalGroups } = await fetchBreakoutAvailability(
       eventId,
       occurrenceId,
-      false
+      false,
+      breakoutSet
     )
     if (totalGroups === 0) return { success: true, data: null }
 
@@ -1052,7 +1173,8 @@ export async function pickCheckinBreakout(
   registrantId: string,
   eventId: string,
   occurrenceId: string | null,
-  groupId: string
+  groupId: string,
+  breakoutSet: BreakoutSet = "event"
 ): Promise<ActionResult<{ name: string } | null>> {
   try {
     if (!(await isCheckedInFor(registrantId, occurrenceId))) {
@@ -1068,15 +1190,16 @@ export async function pickCheckinBreakout(
       // A staffer running the kiosk may have a reason to go over a table's limit;
       // a self-serve arrival does not. The same line the door draws.
       await isEventStaffViewer(),
-      { occurrenceId }
+      { occurrenceId },
+      false,
+      breakoutSet
     )
     // A refused pick (full, switched off, another day's table) comes back as the
     // placement they already had, or null. Either way the caller reports what is
     // true rather than what was asked for.
     if (!assigned) return { success: false, error: "That group is no longer available" }
 
-    const { breakoutOwner } = await resolvePoolScope(eventId)
-    revalidateBreakoutSurfaces(breakoutOwner)
+    revalidateBreakoutSurfaces(await resolveSurfaceBreakoutOwner(eventId, breakoutSet))
     return { success: true, data: { name: assigned.name } }
   } catch {
     return { success: false, error: "Could not save your group" }

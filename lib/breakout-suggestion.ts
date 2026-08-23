@@ -45,6 +45,18 @@ export type BreakoutCandidate = {
    * any group — the distinction `breakout-occupancy-visibility` pins.
    */
   fillLevel: number
+  /**
+   * Held back for manual assignment: never *suggested*, never auto-assigned,
+   * still fully pickable.
+   *
+   * The one field on a candidate that divides `suggestBreakoutGroup` from
+   * `breakoutPickerOptions`, and the reason it lives here rather than in a
+   * `where` clause the way `isEnabled` does — both functions are fed by one
+   * loaded set, so a query-level filter would take the group out of the browse
+   * list too, which is exactly what `isEnabled` already does and what this
+   * setting exists to avoid.
+   */
+  manualAssignOnly: boolean
   /** Raw counts — staffed surfaces only. `null` on the public form. */
   occupancy: CapacityInput | null
 }
@@ -87,6 +99,12 @@ function ageFromBirthYear(birthYear: number | null): number | null {
 }
 
 function isEligible(group: BreakoutCandidate, p: RegistrantProfile): boolean {
+  // The table exists but is filled by hand. A suggestion is the system pushing
+  // someone somewhere, so it never names this one — and `assignBreakoutForRegistrant`
+  // auto-assigns through exactly this function, so the same rule covers both.
+  // `breakoutPickerOptions` still offers it, deliberately.
+  if (group.manualAssignOnly) return false
+
   // A *suggestion* never points at a full group, even though the browse list
   // now lets a staffed operator pick one deliberately.
   if (group.isFull) return false
@@ -239,6 +257,12 @@ export function withoutOccupancy(groups: BreakoutCandidate[]): BreakoutCandidate
  * Pass the *effective* focus — `fetchBreakoutCandidates` already resolves it
  * through `deriveEffectiveGenderFocus`, so a group whose focus is only implied
  * by its facilitator filters the same way an explicit one does.
+ *
+ * `manualAssignOnly` is deliberately *not* applied here, and it is the one place
+ * this list and `suggestBreakoutGroup` are meant to disagree: a group held back
+ * for manual assignment is one the system won't push anyone into, not one nobody
+ * may choose. It also keeps its rank — it is a real table holding real people,
+ * so hiding it from `fillLevel` would distort the ordering of the rest.
  */
 export function breakoutPickerOptions(
   groups: BreakoutCandidate[],

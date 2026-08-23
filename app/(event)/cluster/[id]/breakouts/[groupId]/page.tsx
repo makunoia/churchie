@@ -198,6 +198,9 @@ export default async function ClusterBreakoutGroupDetailPage({
             {group.memberLimit != null
               ? `${breakoutOccupancy({ memberCount: group.members.length, memberLimit: group.memberLimit }).label} members`
               : "No member cap"}
+            {/* The setting lives inside the edit drawer, so without this the
+                only way to see it from the group's own page is to open the form. */}
+            {group.manualAssignOnly && <> · Manual assignment only</>}
           </p>
         }
         action={
@@ -207,6 +210,7 @@ export default async function ClusterBreakoutGroupDetailPage({
               name: group.name,
               facilitatorId: group.facilitatorId,
               memberLimit: group.memberLimit,
+              manualAssignOnly: group.manualAssignOnly,
               linkedSmallGroupId: group.linkedSmallGroupId,
               lifeStages: group.lifeStages,
               genderFocus: group.genderFocus,

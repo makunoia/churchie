@@ -6,6 +6,7 @@ import { IconPencil, IconTrash } from "@tabler/icons-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -61,6 +62,7 @@ export type EditableGroupData = {
   name: string
   facilitatorId: string | null
   memberLimit: number | null
+  manualAssignOnly: boolean
   linkedSmallGroupId: string | null
   lifeStages: { id: string }[]
   genderFocus: string | null
@@ -86,6 +88,7 @@ function EditDialog({
   const [form, setForm] = React.useState({
     name: "",
     memberLimit: "",
+    manualAssignOnly: false,
     facilitatorId: "",
     lifeStageIds: [] as string[],
     genderFocus: "",
@@ -103,6 +106,7 @@ function EditDialog({
       setForm({
         name: group.name,
         memberLimit: group.memberLimit?.toString() ?? "",
+        manualAssignOnly: group.manualAssignOnly,
         facilitatorId: group.facilitatorId ?? "",
         lifeStageIds: group.lifeStages.map((ls) => ls.id),
         genderFocus: group.genderFocus ?? "",
@@ -156,6 +160,7 @@ function EditDialog({
       name: form.name.trim(),
       facilitatorId: form.facilitatorId || null,
       memberLimit: form.memberLimit ? Number(form.memberLimit) : null,
+      manualAssignOnly: form.manualAssignOnly,
       linkedSmallGroupId: sourceGroupId || null,
       lifeStageIds: form.lifeStageIds,
       genderFocus: (form.genderFocus as "Male" | "Female" | "Mixed") || null,
@@ -195,6 +200,24 @@ function EditDialog({
             <div className="space-y-1.5">
               <Label htmlFor="edit-bg-limit">Member Limit</Label>
               <Input id="edit-bg-limit" type="number" min={1} placeholder="Leave blank for unlimited" {...field("memberLimit")} />
+            </div>
+
+            {/* Not under Matching Profile below: that section is captioned "used
+                for auto-assign", and this setting is what switches auto-assign
+                off for this table. It decides which routes reach the group, not
+                which people fit it. */}
+            <div className="flex items-start gap-2.5">
+              <Checkbox
+                id="edit-bg-manual-only"
+                checked={form.manualAssignOnly}
+                onCheckedChange={(v) => setForm((f) => ({ ...f, manualAssignOnly: v === true }))}
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="edit-bg-manual-only" className="font-normal">Manual assignment only</Label>
+                <p className="text-xs text-muted-foreground">
+                  Never suggested and never auto-assigned. Staff and registrants can still choose it.
+                </p>
+              </div>
             </div>
 
             <div className="space-y-1.5">

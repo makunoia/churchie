@@ -17,6 +17,7 @@ import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { DataTable } from "@/components/ui/data-table"
 import {
   Dialog,
@@ -97,6 +98,7 @@ export type BreakoutGroupRow = {
   memberLimit: number | null
   memberCount: number
   isEnabled: boolean
+  manualAssignOnly: boolean
   linkedSmallGroupId: string | null
   linkedSmallGroup: { id: string; name: string } | null
   lifeStages: { id: string; name: string }[]
@@ -117,6 +119,7 @@ function volunteerName(v: { member: { firstName: string; lastName: string } }) {
 const EMPTY_FORM = {
   name: "",
   memberLimit: "",
+  manualAssignOnly: false,
   facilitatorId: "",
   lifeStageIds: [] as string[],
   genderFocus: "",
@@ -150,6 +153,7 @@ function GroupFormDialog({ open, onOpenChange, surface, group, lifeStages, volun
           ? {
               name: group.name,
               memberLimit: group.memberLimit?.toString() ?? "",
+              manualAssignOnly: group.manualAssignOnly,
               facilitatorId: group.facilitatorId ?? "",
               lifeStageIds: group.lifeStages.map((ls) => ls.id),
               genderFocus: group.genderFocus ?? "",
@@ -204,6 +208,7 @@ function GroupFormDialog({ open, onOpenChange, surface, group, lifeStages, volun
       name: form.name.trim(),
       facilitatorId: form.facilitatorId || null,
       memberLimit: form.memberLimit ? Number(form.memberLimit) : null,
+      manualAssignOnly: form.manualAssignOnly,
       linkedSmallGroupId: sourceGroupId || null,
       lifeStageIds: form.lifeStageIds,
       genderFocus: (form.genderFocus as "Male" | "Female" | "Mixed") || null,
@@ -250,6 +255,24 @@ function GroupFormDialog({ open, onOpenChange, surface, group, lifeStages, volun
             <div className="space-y-1.5">
               <Label htmlFor="bg-limit">Member Limit</Label>
               <Input id="bg-limit" type="number" min={1} placeholder="Leave blank for unlimited" {...field("memberLimit")} />
+            </div>
+
+            {/* Not under Matching Profile below: that section is captioned "used
+                for auto-assign", and this setting is what switches auto-assign
+                off for this table. It decides which routes reach the group, not
+                which people fit it. */}
+            <div className="flex items-start gap-2.5">
+              <Checkbox
+                id="bg-manual-only"
+                checked={form.manualAssignOnly}
+                onCheckedChange={(v) => setForm((f) => ({ ...f, manualAssignOnly: v === true }))}
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="bg-manual-only" className="font-normal">Manual assignment only</Label>
+                <p className="text-xs text-muted-foreground">
+                  Never suggested and never auto-assigned. Staff and registrants can still choose it.
+                </p>
+              </div>
             </div>
 
             <div className="space-y-1.5">
@@ -447,9 +470,12 @@ export function buildColumns(
     {
       accessorKey: "name",
       header: "Name",
-      meta: { label: "Name", width: "name", locked: true },
+      meta: { label: "Name", width: "name", locked: true, noTruncate: true },
       // The badge, not just the switch: a row you are scanning past should say
-      // it is out of play without your eye having to reach the last column.
+      // it is out of play without your eye having to reach the last column. The
+      // same goes for a table held back for manual assignment, which has no
+      // switch at all — it is set inside the edit drawer, so the badge is the
+      // only place the state is visible from the list.
       cell: ({ row }) => (
         <div className="flex items-center gap-2">
           <Link
@@ -463,6 +489,11 @@ export function buildColumns(
           </Link>
           {!row.original.isEnabled && (
             <Badge variant="outline" className="text-xs text-muted-foreground">Off</Badge>
+          )}
+          {/* Only alongside an *on* group: "Off" already says nothing arrives
+              automatically, so both badges together would say it twice. */}
+          {row.original.isEnabled && row.original.manualAssignOnly && (
+            <Badge variant="outline" className="text-xs text-muted-foreground">Manual only</Badge>
           )}
         </div>
       ),
@@ -823,6 +854,11 @@ export function BreakoutGroupsTable({
               <div className="flex items-start justify-between gap-2">
                 <p className={`font-medium${group.isEnabled ? "" : " text-muted-foreground"}`}>
                   {group.name}
+                  {group.isEnabled && group.manualAssignOnly && (
+                    <Badge variant="outline" className="ml-2 align-middle text-xs font-normal text-muted-foreground">
+                      Manual only
+                    </Badge>
+                  )}
                 </p>
                 <div onClick={(e) => e.stopPropagation()}>
                   <RowActions row={group} onEdit={setEditingGroup} onDelete={setDeletingGroup} />

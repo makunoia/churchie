@@ -3,11 +3,14 @@ import "server-only"
 import type { Prisma } from "@/app/generated/prisma/client"
 import { db } from "@/lib/db"
 import type { BreakoutCandidate } from "@/lib/breakout-suggestion"
-import { ENABLED_BREAKOUT_WHERE } from "@/lib/breakouts/candidate-pool"
+import {
+  AUTO_ASSIGNABLE_BREAKOUT_WHERE,
+  ENABLED_BREAKOUT_WHERE,
+} from "@/lib/breakouts/candidate-pool"
 import { breakoutOccupancy } from "@/lib/breakouts/occupancy"
 import { deriveEffectiveGenderFocus } from "@/lib/breakouts/gender-focus"
-import { resolvePoolScope } from "@/lib/events/pool-scope"
-import type { BreakoutOwner } from "@/lib/breakouts/owner"
+import { resolvePoolScope, resolveSurfaceBreakoutOwner } from "@/lib/events/pool-scope"
+import type { BreakoutOwner, BreakoutSet } from "@/lib/breakouts/owner"
 
 /**
  * The facilitator gate: a breakout group is only offered at a staffed surface
@@ -179,6 +182,10 @@ async function loadCandidates(
       ageRangeMin: true,
       ageRangeMax: true,
       memberLimit: true,
+      // Selected, never filtered on: the group has to reach the browse list, and
+      // only `isEligible` — the suggester's half — turns it away. Filtering here
+      // would make it behave exactly like `isEnabled: false`.
+      manualAssignOnly: true,
       _count: { select: { members: true } },
       // Not for display — a group's gender focus is often left blank and implied
       // by who runs it, and both the picker and the suggester have to see the
@@ -214,6 +221,7 @@ async function loadCandidates(
       ageRangeMax: g.ageRangeMax,
       isFull: occupancy.isFull,
       fillLevel: fillLevels[i],
+      manualAssignOnly: g.manualAssignOnly,
       occupancy: { memberCount: occupancy.memberCount, memberLimit: occupancy.memberLimit },
     }
   })
@@ -222,12 +230,15 @@ async function loadCandidates(
 export async function fetchBreakoutCandidates(
   eventId: string,
   occurrenceId: string | null,
-  requireCheckedIn = true
+  requireCheckedIn = true,
+  breakoutSet: BreakoutSet = "event"
 ): Promise<BreakoutCandidate[]> {
   // Keeps taking an event id: every caller is a public or per-event surface that
-  // knows which event it is serving. The owner is resolved here so a collab day's
-  // form offers the CLUSTER's tables rather than the event's standing ones.
-  const { breakoutOwner: owner, candidateEventIds } = await resolvePoolScope(eventId)
+  // knows which event it is serving. On a Collab day that event has two sets in
+  // play, so the surface names which — its own by default, the day's when a
+  // cluster form or kiosk is asking.
+  const { candidateEventIds } = await resolvePoolScope(eventId)
+  const owner = await resolveSurfaceBreakoutOwner(eventId, breakoutSet)
 
   return loadCandidates({
     ...owner,
@@ -263,11 +274,12 @@ export type BreakoutAvailability = {
 export async function fetchBreakoutAvailability(
   eventId: string,
   occurrenceId: string | null,
-  requireCheckedIn = true
+  requireCheckedIn = true,
+  breakoutSet: BreakoutSet = "event"
 ): Promise<BreakoutAvailability> {
-  const { breakoutOwner: owner } = await resolvePoolScope(eventId)
+  const owner = await resolveSurfaceBreakoutOwner(eventId, breakoutSet)
   const [candidates, totalGroups] = await Promise.all([
-    fetchBreakoutCandidates(eventId, occurrenceId, requireCheckedIn),
+    fetchBreakoutCandidates(eventId, occurrenceId, requireCheckedIn, breakoutSet),
     db.breakoutGroup.count({ where: { ...owner, ...ENABLED_BREAKOUT_WHERE } }),
   ])
   return { candidates, totalGroups }
@@ -319,6 +331,18 @@ export type BreakoutPickerReadiness = {
    */
   staffedGroups: number
   /**
+   * Enabled groups the system may place someone into by itself — the rest are
+   * held back for manual assignment.
+   *
+   * Separate from `enabledGroups` because `manualAssignOnly` splits the two
+   * halves `isEnabled` moves together: a held-back table is still offered in
+   * every dropdown, so it counts toward "is there anything to show", and never
+   * suggested, so it counts for nothing toward "will auto-assign place anyone".
+   * With auto-assign on and this at zero, the step is suppressed and the
+   * placement it was suppressed in favour of never happens.
+   */
+  autoAssignableGroups: number
+  /**
    * Enabled groups whose **effective** focus is Male or Female — the ones that
    * can never be suggested to someone whose gender the form didn't ask for.
    *
@@ -334,7 +358,7 @@ export type BreakoutPickerReadiness = {
 async function pickerReadinessFor(
   owner: BreakoutOwner
 ): Promise<BreakoutPickerReadiness> {
-  const [totalGroups, enabledGroups, staffedGroups, enabled] = await Promise.all([
+  const [totalGroups, enabledGroups, staffedGroups, autoAssignableGroups, enabled] = await Promise.all([
     db.breakoutGroup.count({ where: owner }),
     db.breakoutGroup.count({ where: { ...owner, ...ENABLED_BREAKOUT_WHERE } }),
     db.breakoutGroup.count({
@@ -344,6 +368,9 @@ async function pickerReadinessFor(
         OR: [{ facilitatorId: { not: null } }, { coFacilitatorId: { not: null } }],
       },
     }),
+    // The same clause `matchBreakoutGroups` scores over, so the warning and the
+    // matcher can't disagree about what is placeable.
+    db.breakoutGroup.count({ where: { ...owner, ...AUTO_ASSIGNABLE_BREAKOUT_WHERE } }),
     db.breakoutGroup.findMany({
       where: { ...owner, ...ENABLED_BREAKOUT_WHERE },
       select: {
@@ -365,7 +392,7 @@ async function pickerReadinessFor(
     return focus === "Male" || focus === "Female"
   }).length
 
-  return { totalGroups, enabledGroups, staffedGroups, genderedGroups }
+  return { totalGroups, enabledGroups, staffedGroups, autoAssignableGroups, genderedGroups }
 }
 
 /**
