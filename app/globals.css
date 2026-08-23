@@ -149,6 +149,25 @@
   }
   body {
     @apply bg-background text-foreground;
+    /*
+     * The app's own typeface, applied where its variable is defined.
+     *
+     * `--font-geist-sans` is set by `GeistSans.variable` on <body>, and
+     * `@theme inline` maps `--font-sans` onto it — but nothing ever set
+     * `font-family` from either, and Tailwind's preflight targets <html>,
+     * where the variable does not exist. So every screen in the app rendered
+     * in whatever `ui-sans-serif` the reader's OS supplies and Geist was never
+     * downloaded at all.
+     *
+     * That is not only a wrong typeface, it makes text metrics a property of
+     * the machine. The column floors in `lib/tables/column-sizing.ts` are
+     * measured pixel widths, so a table that fits on macOS clipped its dates
+     * and phone numbers on Linux — which is how CI and a laptop came to
+     * disagree about the same table. A self-hosted font measures the same
+     * everywhere, and the "GeistSans Fallback" next/font emits alongside it is
+     * metric-adjusted, so the widths hold even before the file has loaded.
+     */
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   }
 
   button, [role="button"], a {

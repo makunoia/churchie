@@ -248,6 +248,34 @@ describe("column width vocabulary", () => {
     }
   })
 
+  it("leaves the two metric-critical columns room for their widest value", () => {
+    // `phone` and `date` are the only tokens whose floor is a claim about text
+    // that must never truncate — every other column degrades into an ellipsis
+    // and stays useful. Both floors were once set to the exact width of one
+    // sample string, so `Nov 20, 2026` already overflowed the date column, and
+    // a Linux runner's wider system font clipped both. Measured in Geist at the
+    // table's 14px, rounded up:
+    const CELL_INSET = 32 // px-4 on either side of the cell
+    const COPY_AFFORDANCE = 20 // the icon CopyableText keeps in the layout
+
+    // "+63 000 000 0000" — 0 is the widest glyph in the face.
+    const WIDEST_PHONE = 129
+    // "May 20, 2000" — widest month, widest two-digit day, widest year.
+    const WIDEST_DATE = 92
+
+    expect(COLUMN_WIDTHS.phone.min).toBeGreaterThan(WIDEST_PHONE + CELL_INSET + COPY_AFFORDANCE)
+    expect(COLUMN_WIDTHS.date.min).toBeGreaterThan(WIDEST_DATE + CELL_INSET)
+  })
+
+  it("keeps a default Members table inside a laptop viewport", () => {
+    // The floors are summed into the table's `min-width`, so raising one buys a
+    // horizontal scrollbar rather than a roomier column. 934px is what the
+    // Members table's container measures at the 1280px viewport the e2e run
+    // uses — the narrowest screen the app is actually checked against.
+    const members = ["micro", "name", "email", "phone", "name", "status", "date", "actions"] as const
+    expect(tableMinWidth([...members])).toBeLessThanOrEqual(934)
+  })
+
   it("gives every flexible column its share of the table as a percentage", () => {
     const styles = columnStyles(["micro", "name", "email"])
     // The checkbox never flexes.

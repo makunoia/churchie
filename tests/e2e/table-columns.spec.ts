@@ -1,4 +1,22 @@
+import type { Page } from "@playwright/test"
+
 import { test, expect } from "./fixtures/admin-session"
+
+/**
+ * Block until the app's own face has actually loaded.
+ *
+ * `document.fonts.ready` alone is not enough: it resolves immediately when no
+ * load is *pending*, which includes the moment before the first glyph has asked
+ * for one. Anything measured in that window is measured against the fallback,
+ * so a width assertion can pass or fail for a reason that has nothing to do
+ * with the code under test.
+ */
+async function waitForAppFont(page: Page) {
+  await page.evaluate(async () => {
+    await document.fonts.load("14px GeistSans")
+    await document.fonts.ready
+  })
+}
 
 /**
  * The column picker, end to end and across a reload.
@@ -94,6 +112,38 @@ test.describe("Table chrome", () => {
     await expect(page.getByText(new RegExp(`^${rows} members?$`))).toBeVisible()
   })
 
+  test("the table renders in the app's own typeface, not the reader's", async ({
+    adminPage: page,
+  }) => {
+    await page.goto("/members")
+    await expect(page.locator("table").first()).toBeVisible()
+    await waitForAppFont(page)
+
+    // The defect this pins, and the reason the width test below can be trusted
+    // at all. `GeistSans.variable` puts `--font-geist-sans` on <body> and
+    // `@theme inline` maps `--font-sans` onto it, but nothing ever set
+    // `font-family` from either — and Tailwind's preflight targets <html>,
+    // where the variable does not exist. So the app rendered in whatever
+    // `ui-sans-serif` the reader's OS supplies and Geist was never fetched.
+    //
+    // The column floors are measured pixel widths, which makes them a claim
+    // about a specific face. Left to the OS, that face was SF Pro on a laptop
+    // and something wider on a Linux CI runner, so the same Members table fit
+    // in one place and clipped its dates and phone numbers in the other.
+    const font = await page
+      .locator("tbody tr td")
+      .first()
+      .evaluate((cell) => getComputedStyle(cell).fontFamily)
+    expect(font).toMatch(/GeistSans/)
+
+    // Named *and* actually loaded — a font-family naming a face the browser
+    // never fetched falls through to the next entry in the stack silently.
+    const status = await page.evaluate(
+      () => Array.from(document.fonts).find((face) => face.family === "GeistSans")?.status,
+    )
+    expect(status).toBe("loaded")
+  })
+
   test("a column is as wide as its token says, not as wide as its neighbours", async ({
     adminPage: page,
   }) => {
@@ -143,7 +193,7 @@ test.describe("Table chrome", () => {
     // numbers, since that is what the floors are *for*.
     // Text metrics decide this one, so wait for the real face — measured
     // against the fallback font it can pass or fail for the wrong reason.
-    await page.evaluate(() => document.fonts.ready)
+    await waitForAppFont(page)
 
     const clipped = await table.evaluate((node) => {
       const heads = Array.from(node.querySelectorAll("thead th")).map((th) =>
