@@ -46,7 +46,11 @@ export function CatchMechUndoButton({ requestId, eventId, decision }: Props) {
 
   const body =
     decision === "Confirmed"
-      ? "This removes the person from the DGroup and moves them back to Pending. If they were promoted from a guest, their member record is deleted and the guest is restored."
+      // The guest half is conditional: `undoCatchMechDecision` only unwinds a promotion
+      // while the guest row is still there. A duplicate-profile merge deletes it, and
+      // then the undo keeps the member record rather than resurrecting an identity the
+      // admin deliberately merged away.
+      ? "This removes the person from the DGroup and moves them back to Pending. If they were promoted from a guest and that guest record still exists, their member record is deleted and the guest is restored."
       : "This reopens the rejection and moves the person back to Pending, awaiting the leader's decision again."
 
   return (

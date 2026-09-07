@@ -2,6 +2,7 @@ import type { Metadata } from "next"
 import { randomUUID } from "crypto"
 import { notFound, redirect } from "next/navigation"
 import { db } from "@/lib/db"
+import { portalTokenWhere } from "@/lib/people/portal-tokens"
 import { mapCouplesInRoster } from "@/lib/family-links"
 import { getLeaderOptions } from "@/lib/small-groups/leader-options"
 import { GuestOnboardingClient } from "./guest-onboarding-client"
@@ -14,8 +15,8 @@ import { MePortalClient } from "./me-portal-client"
  * rather than dead-ending on a screen they have already finished.
  */
 async function resolveGuestToken(token: string) {
-  const guest = await db.guest.findUnique({
-    where: { selfServiceToken: token },
+  const guest = await db.guest.findFirst({
+    where: portalTokenWhere(token),
     select: {
       id: true,
       firstName: true,
@@ -60,8 +61,8 @@ export default async function MemberPortalPage({
 }) {
   const { token } = await params
 
-  const member = await db.member.findUnique({
-    where: { selfServiceToken: token },
+  const member = await db.member.findFirst({
+    where: portalTokenWhere(token),
     select: {
       id: true,
       firstName: true,

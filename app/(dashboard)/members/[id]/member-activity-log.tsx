@@ -1,6 +1,8 @@
 import Link from "next/link"
-import { IconCalendar, IconCheck, IconClock, IconMessageCircle, IconPencil, IconUserCheck, IconX } from "@tabler/icons-react"
+import { IconArrowMerge, IconCalendar, IconCheck, IconClock, IconMessageCircle, IconPencil, IconUserCheck, IconX } from "@tabler/icons-react"
 import { TimelineEntry } from "@/components/ui/timeline-entry"
+import { memberLogLabel } from "@/lib/member-log"
+import { MERGE_LOG_ACTION } from "@/lib/people/merge-fields"
 import {
   logActorName,
   SMALL_GROUP_LOG_LABEL,
@@ -46,9 +48,11 @@ type CatchMechCommentEntry = {
   event: { id: string; name: string } | null
 }
 
-type VolunteerInfoUpdateEntry = {
-  kind: "volunteerInfoUpdate"
+type MemberLogEntry = {
+  kind: "memberLog"
   id: string
+  /** Free-string `MemberLog.action`; `memberLogLabel` handles unknown values. */
+  action: string
   description: string | null
   event: { id: string; name: string } | null
   createdAt: Date
@@ -59,7 +63,7 @@ export type MemberActivityEntry =
   | EventRegistrationEntry
   | GuestOriginEntry
   | CatchMechCommentEntry
-  | VolunteerInfoUpdateEntry
+  | MemberLogEntry
 
 
 function iconForSmallGroupAction(action: SmallGroupLogEntry["action"]) {
@@ -195,18 +199,25 @@ export function MemberActivityLog({ entries }: { entries: MemberActivityEntry[] 
           )
         }
 
-        if (entry.kind === "volunteerInfoUpdate") {
+        if (entry.kind === "memberLog") {
+          const isMerge = entry.action === MERGE_LOG_ACTION
           return (
             <TimelineEntry
-              key={`vol-info-${entry.id}`}
+              key={`member-log-${entry.id}`}
               icon={
-                <span className="inline-flex size-5 items-center justify-center rounded-full bg-violet-100">
-                  <IconPencil className="size-3 text-violet-700" />
-                </span>
+                isMerge ? (
+                  <span className="inline-flex size-5 items-center justify-center rounded-full bg-amber-100">
+                    <IconArrowMerge className="size-3 text-amber-700" />
+                  </span>
+                ) : (
+                  <span className="inline-flex size-5 items-center justify-center rounded-full bg-violet-100">
+                    <IconPencil className="size-3 text-violet-700" />
+                  </span>
+                )
               }
               isLast={isLast}
             >
-              <p className="text-sm font-medium">Updated volunteer information</p>
+              <p className="text-sm font-medium">{memberLogLabel(entry.action)}</p>
               <p className="text-xs text-muted-foreground">
                 {entry.event && (
                   <>
@@ -222,7 +233,12 @@ export function MemberActivityLog({ entries }: { entries: MemberActivityEntry[] 
                 {formatDate(entry.createdAt)}
               </p>
               {entry.description && (
-                <p className="text-xs text-muted-foreground mt-0.5">{entry.description}</p>
+                // A merge report is multi-line — what was carried, what was folded, and
+                // every conflicting value it had to discard. Collapsing that to one line
+                // would hide the only surviving record of the deleted profile.
+                <p className="text-xs text-muted-foreground mt-0.5 whitespace-pre-line">
+                  {entry.description}
+                </p>
               )}
             </TimelineEntry>
           )

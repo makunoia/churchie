@@ -343,9 +343,13 @@ async function getMemberActivityData(memberId: string) {
         ]
       : []),
     ...allComments,
+    // `MemberLog.action` decides how the row reads. It used to be selected and then
+    // discarded, with `kind` hardcoded — so every entry rendered as "Updated volunteer
+    // information" regardless of what it actually recorded.
     ...memberLogEntries.map((log) => ({
-      kind: "volunteerInfoUpdate" as const,
+      kind: "memberLog" as const,
       id: log.id,
+      action: log.action,
       description: log.description,
       event: log.event,
       createdAt: log.createdAt,

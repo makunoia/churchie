@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import type { Prisma } from "@/app/generated/prisma/client"
 import { db } from "@/lib/db"
+import { portalTokenWhere } from "@/lib/people/portal-tokens"
 import { findSpouse, type SpouseInfo } from "@/lib/family-links"
 import { PROMOTABLE_GUEST_SELECT, promoteGuestRecord } from "@/lib/people/promote-guest"
 import { PERSON_NAME_FIELDS, personSearchWhere } from "@/lib/search/name-search"
@@ -16,8 +17,8 @@ type ActionResult<T = void> =
 
 async function getMemberByToken(token: string) {
   if (!token) return null
-  return db.member.findUnique({
-    where: { selfServiceToken: token },
+  return db.member.findFirst({
+    where: portalTokenWhere(token),
     select: {
       id: true,
       firstName: true,
@@ -371,8 +372,8 @@ export async function declareLeaderAndJoin(
   try {
     if (!token) return { success: false, error: "Invalid or expired link" }
 
-    const guest = await db.guest.findUnique({
-      where: { selfServiceToken: token },
+    const guest = await db.guest.findFirst({
+      where: portalTokenWhere(token),
       select: { id: true, ...PROMOTABLE_GUEST_SELECT },
     })
     if (!guest) return { success: false, error: "Invalid or expired link" }
