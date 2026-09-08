@@ -10,7 +10,9 @@ export const registrantSchema = z.object({
   firstName: z.string().min(1, "First name is required").trim(),
   lastName: z.string().min(1, "Last name is required").trim(),
   nickname: z.string().nullish().transform((v) => (v === "" || v == null ? null : v.trim())),
-  email: z.string().nullish().transform((v) => (v === "" || v == null ? null : v.trim())),
+  email: z.string().nullish()
+    .transform((v) => v?.trim() || null)
+    .pipe(z.email({ error: "Please enter a valid email address." }).nullable()),
   mobileNumber: z.string().nullish().transform((v) => (v === "" || v == null ? null : formatPhilippinePhone(v.trim()))),
   // Birthday — used as fallback matching field when no mobile or email
   birthMonth: optionalBirthMonth,

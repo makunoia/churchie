@@ -411,6 +411,7 @@ model Member {
 
   // Self-service token for the public /me member portal link
   selfServiceToken    String?             @unique
+  selfServiceTokenAliases String[] @default([])
 
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
@@ -469,6 +470,7 @@ model Guest {
   // A guest gets one so the "who is your leader?" step has a refresh-safe URL; once
   // they answer they are promoted and the portal hands them their member token.
   selfServiceToken String? @unique
+  selfServiceTokenAliases String[] @default([])
 
   // Promotion — set when Guest is added to a Small Group and becomes a Member
   memberId    String?  @unique

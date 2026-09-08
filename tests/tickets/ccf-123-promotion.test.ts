@@ -65,6 +65,8 @@ const INTENTIONALLY_NOT_COPIED: Record<string, string> = {
   claimedSatellite: "same — a self-reported claim, not a member attribute",
   selfServiceToken:
     "the guest's own portal token; promotion mints a fresh Member.selfServiceToken rather than reusing it",
+  selfServiceTokenAliases:
+    "remain on the retained guest; the portal follows its promotion link to the member",
   scheduleDayOfWeek: "becomes a SchedulePreference row, not a Member column",
   scheduleTimeStart: "becomes a SchedulePreference row, not a Member column",
   scheduleTimeEnd: "becomes a SchedulePreference row, not a Member column",
